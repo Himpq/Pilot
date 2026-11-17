@@ -40,7 +40,7 @@ static PilotApiV1 g_api = {
 };
 
 __attribute__((visibility("default"), used))
-const PilotApiV1 *pilot_v1_get_api(void)
+const PilotApiV1 *pilot_a6700_v1_get_api(void)
 {
     uint32_t features = 0;
     if (__atomic_load_n(&g_pilot.optional_features_enabled, __ATOMIC_ACQUIRE)) {

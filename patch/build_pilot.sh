@@ -32,7 +32,7 @@ if grep -q '(TEXTREL)' <<<"$ELF_DYNAMIC"; then
     echo "text relocation found in Pilot DSO" >&2
     exit 1
 fi
-for symbol in pilot_v1_on_mount pilot_v1_marker pilot_v1_get_api; do
+for symbol in pilot_a6700_v1_on_mount pilot_a6700_v1_marker pilot_a6700_v1_get_api; do
     grep -q "$symbol" <<<"$ELF_SYMBOLS"
 done
 sha256sum "$OUT"

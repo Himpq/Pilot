@@ -33,7 +33,7 @@ struct pilot_runtime g_pilot = {
 };
 
 __attribute__((visibility("default"), used))
-const unsigned int pilot_v1_marker = 0x50494c31u;
+const unsigned int pilot_a6700_v1_marker = 0x50494c31u;
 
 static void pilot_runtime_log(const char *message)
 {
@@ -157,7 +157,7 @@ static void *pilot_card_log_worker(void *opaque)
 }
 
 __attribute__((visibility("default"), used))
-void pilot_v1_on_mount(
+void pilot_a6700_v1_on_mount(
     const struct pilot_mount_args *mount_args,
     pilot_get_drive_letter_fn get_drive_letter,
     pilot_mkdir_fn mkdir_path,

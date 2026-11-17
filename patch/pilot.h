@@ -56,7 +56,7 @@ typedef struct PilotApiV1 {
 
 typedef PilotStatus (*PilotModuleInitV1)(const PilotApiV1 *api);
 
-const PilotApiV1 *pilot_v1_get_api(void);
+const PilotApiV1 *pilot_a6700_v1_get_api(void);
 
 #ifdef __cplusplus
 }

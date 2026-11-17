@@ -114,7 +114,7 @@ static int valid_filename(const char *name)
 
 static void module_log(const char *message)
 {
-    const PilotApiV1 *api = pilot_v1_get_api();
+    const PilotApiV1 *api = pilot_a6700_v1_get_api();
     if (api && api->log_write)
         (void)api->log_write(message, strlen(message));
 }
@@ -290,7 +290,7 @@ void pilot_load_modules(void)
         __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
         return;
     }
-    const PilotApiV1 *api = pilot_v1_get_api();
+    const PilotApiV1 *api = pilot_a6700_v1_get_api();
     size_t staged_total_bytes = 0;
     for (size_t i = 0; i < count; ++i) {
         if (!__atomic_load_n(&g_pilot.optional_features_enabled, __ATOMIC_ACQUIRE))
