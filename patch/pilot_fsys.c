@@ -12,65 +12,121 @@
 #define PILOT_FSYS_OPEN_WRITE 2
 #define PILOT_FSYS_SEEK_END 2
 
-static int resolve_symbol(const char *name, void *destination, size_t size)
+static int resolve_symbol(const char *name,
+                          void *destination,
+                          size_t size,
+                          const char **missing_symbol_out)
 {
     void *symbol = dlsym(RTLD_DEFAULT, name);
-    if (!symbol || size != sizeof(symbol)) return 0;
+    if (!symbol || size != sizeof(symbol)) {
+        if (missing_symbol_out && !*missing_symbol_out)
+            *missing_symbol_out = name;
+        return 0;
+    }
     memcpy(destination, &symbol, size);
     return 1;
 }
 
-int pilot_fsys_resolve(struct pilot_fsys_api *api)
+int pilot_fsys_resolve(struct pilot_fsys_api *api,
+                       const char **missing_symbol_out)
 {
-    if (!api) return 0;
+    if (missing_symbol_out) *missing_symbol_out = 0;
+    if (!api) {
+        if (missing_symbol_out) *missing_symbol_out = "<api>";
+        return 0;
+    }
     memset(api, 0, sizeof(*api));
 
     int ok = 1;
-    ok &= resolve_symbol("Fsys_Stat", &api->stat_path, sizeof(api->stat_path));
-    ok &= resolve_symbol("Fsys_Open", &api->open_file, sizeof(api->open_file));
-    ok &= resolve_symbol("Fsys_Read", &api->read_file, sizeof(api->read_file));
-    ok &= resolve_symbol("Fsys_Write", &api->write_file, sizeof(api->write_file));
-    ok &= resolve_symbol("Fsys_Seek", &api->seek_file, sizeof(api->seek_file));
-    ok &= resolve_symbol("Fsys_Flush", &api->flush_file, sizeof(api->flush_file));
-    ok &= resolve_symbol("Fsys_Close", &api->close_file, sizeof(api->close_file));
-    ok &= resolve_symbol("pf2_errnum", &api->pf2_errnum, sizeof(api->pf2_errnum));
-    ok &= resolve_symbol("pf2_inerrnum", &api->pf2_inerrnum, sizeof(api->pf2_inerrnum));
+    ok &= resolve_symbol("Fsys_Stat", &api->stat_path,
+                         sizeof(api->stat_path), missing_symbol_out);
+    ok &= resolve_symbol("Fsys_Open", &api->open_file,
+                         sizeof(api->open_file), missing_symbol_out);
+    ok &= resolve_symbol("Fsys_Read", &api->read_file,
+                         sizeof(api->read_file), missing_symbol_out);
+    ok &= resolve_symbol("Fsys_Write", &api->write_file,
+                         sizeof(api->write_file), missing_symbol_out);
+    ok &= resolve_symbol("Fsys_Seek", &api->seek_file,
+                         sizeof(api->seek_file), missing_symbol_out);
+    ok &= resolve_symbol("Fsys_Flush", &api->flush_file,
+                         sizeof(api->flush_file), missing_symbol_out);
+    ok &= resolve_symbol("Fsys_Close", &api->close_file,
+                         sizeof(api->close_file), missing_symbol_out);
+    ok &= resolve_symbol("pf2_errnum", &api->pf2_errnum,
+                         sizeof(api->pf2_errnum), missing_symbol_out);
+    ok &= resolve_symbol("pf2_inerrnum", &api->pf2_inerrnum,
+                         sizeof(api->pf2_inerrnum), missing_symbol_out);
     return ok;
+}
+
+static void set_check_diagnostic(
+    struct pilot_fsys_check_diagnostic *diagnostic,
+    const char *stage,
+    int status,
+    const struct pilot_fsys_api *api)
+{
+    if (!diagnostic) return;
+    diagnostic->stage = stage;
+    diagnostic->status = status;
+    diagnostic->pf2_errno = api && api->pf2_errnum
+        ? api->pf2_errnum() : -1;
+    diagnostic->pf2_inner = api && api->pf2_inerrnum
+        ? api->pf2_inerrnum() : -1;
 }
 
 int pilot_fsys_is_not_found(const struct pilot_fsys_api *api, int status)
 {
-    if (!api || !api->pf2_errnum || !api->pf2_inerrnum ||
-        (uint32_t)status != PILOT_FSYS_NOT_FOUND_STATUS)
+    if (!api || (uint32_t)status != PILOT_FSYS_NOT_FOUND_STATUS)
         return 0;
 
-    int error_number = api->pf2_errnum();
-    int inner_error = api->pf2_inerrnum();
-    return error_number == ENOENT && inner_error == 0;
+    /* Fsys_Open can return NOT_FOUND while the PF2 error pair remains 0/0. */
+    if (api->pf2_errnum) (void)api->pf2_errnum();
+    if (api->pf2_inerrnum) (void)api->pf2_inerrnum();
+    return 1;
 }
 
 int pilot_fsys_check_disable(const char *directory,
                              const char *marker,
-                             const struct pilot_fsys_api *api)
+                             const struct pilot_fsys_api *api,
+                             struct pilot_fsys_check_diagnostic *diagnostic)
 {
+    if (diagnostic) {
+        diagnostic->stage = "none";
+        diagnostic->status = 0;
+        diagnostic->pf2_errno = 0;
+        diagnostic->pf2_inner = 0;
+    }
     if (!directory || !marker || !api || !api->stat_path ||
         !api->open_file || !api->close_file || !api->pf2_errnum ||
-        !api->pf2_inerrnum)
+        !api->pf2_inerrnum) {
+        set_check_diagnostic(diagnostic, "invalid_args", -1, api);
         return -1;
+    }
 
     struct stat parent_stat;
     memset(&parent_stat, 0, sizeof(parent_stat));
-    if (api->stat_path(directory, &parent_stat) != 0) return -1;
+    int stat_status = api->stat_path(directory, &parent_stat);
+    if (stat_status != 0) {
+        set_check_diagnostic(diagnostic, "stat_directory", stat_status, api);
+        return -1;
+    }
 
     void *handle = 0;
     int status = api->open_file(marker, &handle, PILOT_FSYS_OPEN_READ);
     if (status == 0 && handle) {
         int close_status = api->close_file(handle);
-        return close_status == 0 ? 1 : -1;
+        if (close_status == 0) return 1;
+        set_check_diagnostic(diagnostic, "close_marker", close_status, api);
+        return -1;
     }
 
     /* Read the thread-local PF2 error pair before making another Fsys call. */
-    if (pilot_fsys_is_not_found(api, status)) return 0;
+    int not_found = pilot_fsys_is_not_found(api, status);
+    set_check_diagnostic(diagnostic, "open_marker", status, api);
+    if (not_found) {
+        if (diagnostic) diagnostic->stage = "marker_absent";
+        return 0;
+    }
     return -1;
 }
 

@@ -41,6 +41,13 @@ struct pilot_fsys_api {
     pilot_pf2_error_fn pf2_inerrnum;
 };
 
+struct pilot_fsys_check_diagnostic {
+    const char *stage;
+    int status;
+    int pf2_errno;
+    int pf2_inner;
+};
+
 struct pilot_mount_args {
     void *drive_descriptor;
     unsigned char mount_flags;
@@ -64,11 +71,13 @@ struct pilot_runtime {
 
 extern struct pilot_runtime g_pilot;
 
-int pilot_fsys_resolve(struct pilot_fsys_api *api);
+int pilot_fsys_resolve(struct pilot_fsys_api *api,
+                       const char **missing_symbol_out);
 int pilot_fsys_is_not_found(const struct pilot_fsys_api *api, int status);
 int pilot_fsys_check_disable(const char *directory,
                             const char *marker,
-                            const struct pilot_fsys_api *api);
+                            const struct pilot_fsys_api *api,
+                            struct pilot_fsys_check_diagnostic *diagnostic);
 PilotStatus pilot_fsys_read_all(const struct pilot_fsys_api *api,
                                 const char *path,
                                 void *buffer,

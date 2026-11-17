@@ -102,42 +102,63 @@ void pilot_runtime_mount_worker(struct pilot_mount_args mount_args,
 
     (void)mkdir_path(directory);
 
-    if (!pilot_fsys_resolve(&g_pilot.fsys)) {
+    char gate_detail[176];
+    const char *missing_symbol = 0;
+    struct pilot_fsys_check_diagnostic diagnostic;
+    memset(&diagnostic, 0, sizeof(diagnostic));
+    if (!pilot_fsys_resolve(&g_pilot.fsys, &missing_symbol)) {
         pilot_set_feature_state(0);
-        char receipt[112];
-        snprintf(receipt, sizeof(receipt),
-                 "PILOT_GATE=closed reason=fsys_api_unresolved drive=%c\n",
-                 drive_letter);
+        snprintf(gate_detail, sizeof(gate_detail),
+                 "gate=fsys_resolve_failed missing=%s",
+                 missing_symbol ? missing_symbol : "unknown");
+        char receipt[224];
+        snprintf(receipt, sizeof(receipt), "PILOT_GATE=closed %s drive=%c\n",
+                 gate_detail, drive_letter);
         pilot_runtime_log(receipt);
     } else {
         int marker_state = pilot_fsys_check_disable(directory, marker,
-                                                    &g_pilot.fsys);
+                                                    &g_pilot.fsys,
+                                                    &diagnostic);
         pilot_set_feature_state(marker_state == 0);
-        if (marker_state == 1)
+        if (marker_state == 1) {
+            snprintf(gate_detail, sizeof(gate_detail), "gate=disable_marker");
             pilot_runtime_log("PILOT_GATE=closed reason=pilot/disable\n");
-        else if (marker_state < 0)
-            pilot_runtime_log("PILOT_GATE=closed reason=disable_check_error\n");
-        else
+        } else if (marker_state < 0) {
+            snprintf(gate_detail, sizeof(gate_detail),
+                     "gate=disable_check_error stage=%s status=0x%08X pf2=%d inner=%d",
+                     diagnostic.stage ? diagnostic.stage : "unknown",
+                     (unsigned int)diagnostic.status,
+                     diagnostic.pf2_errno, diagnostic.pf2_inner);
+            char receipt[224];
+            snprintf(receipt, sizeof(receipt), "PILOT_GATE=closed %s\n",
+                     gate_detail);
+            pilot_runtime_log(receipt);
+        } else {
+            snprintf(gate_detail, sizeof(gate_detail), "gate=open");
             pilot_runtime_log("PILOT_GATE=open reason=disable_marker_absent\n");
+        }
     }
 
-    char line[256];
+    char line[384];
     char timestamp[32];
     int enabled = __atomic_load_n(&g_pilot.optional_features_enabled,
                                   __ATOMIC_ACQUIRE);
     if (enabled && pilot_time_utc_impl(timestamp, sizeof(timestamp)) ==
                        PILOT_STATUS_OK) {
         snprintf(line, sizeof(line),
-                 "%s Pilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=enabled)\n",
-                 timestamp, drive_letter, (unsigned int)mount_args.mount_flags);
+                 "%s Pilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=enabled, %s)\n",
+                 timestamp, drive_letter, (unsigned int)mount_args.mount_flags,
+                 gate_detail);
     } else if (enabled) {
         snprintf(line, sizeof(line),
-                 "Pilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=enabled, time=unavailable)\n",
-                 drive_letter, (unsigned int)mount_args.mount_flags);
+                 "Pilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=enabled, time=unavailable, %s)\n",
+                 drive_letter, (unsigned int)mount_args.mount_flags,
+                 gate_detail);
     } else {
         snprintf(line, sizeof(line),
-                 "Pilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=disabled)\n",
-                 drive_letter, (unsigned int)mount_args.mount_flags);
+                 "Pilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=disabled, %s)\n",
+                 drive_letter, (unsigned int)mount_args.mount_flags,
+                 gate_detail);
     }
     PilotStatus log_status = pilot_log_append(line, strlen(line), 0);
     pilot_runtime_log(log_status == PILOT_STATUS_OK
