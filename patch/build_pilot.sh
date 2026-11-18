@@ -20,6 +20,7 @@ mkdir -p "$(dirname "$OUT")"
     "$PATCH_DIR/pilot_api.c" \
     "$PATCH_DIR/pilot_memory.c" \
     "$PATCH_DIR/pilot_module_dir.c" \
+    "$PATCH_DIR/pilot_module_files.c" \
     "$PATCH_DIR/pilot_modules.c" \
     -l:libpthread.so.0 -l:libdl.so.2 -l:libc.so.6 -lgcc
 
@@ -32,7 +33,7 @@ if grep -q '(TEXTREL)' <<<"$ELF_DYNAMIC"; then
     echo "text relocation found in Pilot DSO" >&2
     exit 1
 fi
-for symbol in pilot_a6700_v1_on_mount pilot_a6700_v1_marker pilot_a6700_v1_get_api; do
+for symbol in pilot_a6700_v1_on_mount pilot_a6700_v1_marker pilot_a6700_get_api; do
     grep -q "$symbol" <<<"$ELF_SYMBOLS"
 done
 sha256sum "$OUT"

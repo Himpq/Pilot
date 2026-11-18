@@ -15,6 +15,7 @@ for pilot_input in \
     "$pilot_root/patch/pilot_api.c" \
     "$pilot_root/patch/pilot_memory.c" \
     "$pilot_root/patch/pilot_module_dir.c" \
+    "$pilot_root/patch/pilot_module_files.c" \
     "$pilot_root/patch/pilot_modules.c"; do
     pilot_object="$pilot_build/$(basename "${pilot_input%.c}").o"
     "$pilot_cc" --sysroot="$pilot_sysroot" \

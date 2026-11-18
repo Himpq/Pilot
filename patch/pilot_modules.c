@@ -12,9 +12,10 @@
 #define PILOT_MANIFEST_CAPACITY 4096u
 #define PILOT_MODULE_NAME_CAPACITY 65u
 #define PILOT_MODULE_MAX_BYTES (2u * 1024u * 1024u)
-#define PILOT_MODULE_MAX_COUNT 16u
 #define PILOT_MODULE_MAX_TOTAL_BYTES (8u * 1024u * 1024u)
 #define PILOT_MODULE_STAGE_DIR "/tmp_wbshd/pilot/modules"
+#define PILOT_FNV64_OFFSET 14695981039346656037ull
+#define PILOT_FNV64_PRIME 1099511628211ull
 
 struct json_cursor {
     const char *cursor;
@@ -95,6 +96,18 @@ static int parse_modules_json(const char *data,
     return 1;
 }
 
+static int module_data_name(const char *filename,
+                            char name[PILOT_MODULE_NAME_CAPACITY])
+{
+    size_t length = filename ? strlen(filename) : 0;
+    if (length <= 3 || strcmp(filename + length - 3, ".so") != 0 ||
+        length - 3 >= PILOT_MODULE_NAME_CAPACITY)
+        return 0;
+    memcpy(name, filename, length - 3);
+    name[length - 3] = '\0';
+    return 1;
+}
+
 static int valid_filename(const char *name)
 {
     if (!name || !*name || name[0] == '.' || strstr(name, "..")) return 0;
@@ -114,9 +127,9 @@ static int valid_filename(const char *name)
 
 static void module_log(const char *message)
 {
-    const PilotApiV1 *api = pilot_a6700_v1_get_api();
-    if (api && api->log_write)
-        (void)api->log_write(message, strlen(message));
+    const PilotApi *api = pilot_a6700_get_api();
+    if (api && api->log && api->log->print)
+        (void)api->log->print(message);
 }
 
 static int ensure_directory(const char *path)
@@ -147,13 +160,29 @@ static void log_system_error(const char *operation, const char *path, int error)
         module_log(message);
 }
 
+static uint64_t package_hash_update(uint64_t hash,
+                                    const void *data,
+                                    size_t length)
+{
+    const unsigned char *bytes = data;
+    for (size_t i = 0; i < length; ++i) {
+        hash ^= bytes[i];
+        hash *= PILOT_FNV64_PRIME;
+    }
+    return hash;
+}
+
 static PilotStatus stage_module(const char *name,
                                 char destination[160],
-                                size_t *staged_total_bytes)
+                                size_t *staged_total_bytes,
+                                uint64_t *package_hash)
 {
     if (!valid_filename(name) || !staged_total_bytes ||
+        !package_hash ||
         *staged_total_bytes > PILOT_MODULE_MAX_TOTAL_BYTES)
         return PILOT_STATUS_INVALID_ARGUMENT;
+
+    *package_hash = package_hash_update(*package_hash, name, strlen(name) + 1);
 
     char source[160];
     int source_size = snprintf(source, sizeof(source), "%c:/pilot/%s",
@@ -206,6 +235,9 @@ static PilotStatus stage_module(const char *name,
             result = PILOT_STATUS_RANGE;
             break;
         }
+
+        *package_hash = package_hash_update(*package_hash, buffer,
+                                            (size_t)count);
 
         size_t remaining = (size_t)count;
         const char *cursor = buffer;
@@ -270,6 +302,9 @@ void pilot_load_modules(void)
     if (read_status != PILOT_STATUS_OK) {
         if (not_found) {
             module_log("Pilot modules.json not found; no modules loaded");
+            if (pilot_fuse_append_state(PILOT_FUSE_STATE_COMPLETE,
+                                        PILOT_FNV64_OFFSET) != PILOT_STATUS_OK)
+                module_log("Pilot module fuse completion record failed");
             return;
         }
         __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
@@ -285,20 +320,29 @@ void pilot_load_modules(void)
         return;
     }
 
+    uint64_t package_hash = package_hash_update(PILOT_FNV64_OFFSET,
+                                               manifest, manifest_length);
+    if (count == 0) {
+        if (pilot_fuse_append_state(PILOT_FUSE_STATE_COMPLETE,
+                                    package_hash) != PILOT_STATUS_OK)
+            module_log("Pilot module fuse completion record failed");
+        return;
+    }
+
     if (!ensure_stage_directory()) {
         log_system_error("stage directory", PILOT_MODULE_STAGE_DIR, errno);
         __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
         return;
     }
-    const PilotApiV1 *api = pilot_a6700_v1_get_api();
     size_t staged_total_bytes = 0;
+    char staged_paths[PILOT_MODULE_MAX_COUNT][160] = {{0}};
     for (size_t i = 0; i < count; ++i) {
         if (!__atomic_load_n(&g_pilot.optional_features_enabled, __ATOMIC_ACQUIRE))
-            break;
+            return;
 
-        char staged_path[160];
-        PilotStatus stage_status = stage_module(names[i], staged_path,
-                                                &staged_total_bytes);
+        PilotStatus stage_status = stage_module(names[i], staged_paths[i],
+                                                &staged_total_bytes,
+                                                &package_hash);
         if (stage_status != PILOT_STATUS_OK) {
             char message[192];
             int length = snprintf(message, sizeof(message),
@@ -307,30 +351,95 @@ void pilot_load_modules(void)
             if (length > 0 && (size_t)length < sizeof(message))
                 module_log(message);
             __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
+            return;
+        }
+    }
+
+    enum pilot_fuse_state previous_state = PILOT_FUSE_STATE_INVALID;
+    uint64_t previous_package = 0;
+    PilotStatus fuse_status = pilot_fuse_read_state(&previous_state,
+                                                    &previous_package);
+    if (fuse_status != PILOT_STATUS_OK ||
+        previous_state == PILOT_FUSE_STATE_INVALID) {
+        (void)pilot_fuse_append_state(PILOT_FUSE_STATE_TRIPPED, package_hash);
+        module_log("Pilot module fuse state unreadable; optional modules disabled");
+        __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
+        return;
+    }
+    if (previous_package == package_hash &&
+        (previous_state == PILOT_FUSE_STATE_ARMED ||
+         previous_state == PILOT_FUSE_STATE_TRIPPED)) {
+        if (previous_state == PILOT_FUSE_STATE_ARMED)
+            (void)pilot_fuse_append_state(PILOT_FUSE_STATE_TRIPPED,
+                                          package_hash);
+        module_log("Pilot module fuse tripped; this module package is quarantined");
+        __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
+        return;
+    }
+
+    if (pilot_fuse_append_state(PILOT_FUSE_STATE_ARMED,
+                                package_hash) != PILOT_STATUS_OK) {
+        module_log("Pilot module fuse arm record failed; modules not loaded");
+        __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
+        return;
+    }
+
+    int traversal_complete = 1;
+    for (size_t i = 0; i < count; ++i) {
+        if (!__atomic_load_n(&g_pilot.optional_features_enabled, __ATOMIC_ACQUIRE)) {
+            traversal_complete = 0;
             break;
         }
 
-        void *handle = dlopen(staged_path, RTLD_NOW | RTLD_GLOBAL);
+        void *handle = dlopen(staged_paths[i], RTLD_NOW | RTLD_GLOBAL);
         if (!handle) {
             const char *error = dlerror();
             char message[256];
             int length = snprintf(message, sizeof(message),
                                   "Pilot dlopen failed path=%s error=%s",
-                                  staged_path, error ? error : "unknown");
+                                  staged_paths[i], error ? error : "unknown");
             if (length > 0 && (size_t)length < sizeof(message))
                 module_log(message);
             __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
+            traversal_complete = 0;
             break;
         }
 
         void *symbol = dlsym(handle, PILOT_MODULE_INIT_SYMBOL);
-        PilotModuleInitV1 init = 0;
+        PilotModuleInit init = 0;
         if (symbol && sizeof(init) == sizeof(symbol))
             memcpy(&init, &symbol, sizeof(init));
-        if (!init || init(api) != PILOT_STATUS_OK) {
+        if (!init) {
+            module_log("Pilot module init symbol missing; remaining modules skipped");
+            __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
+            g_pilot.module_handles[g_pilot.module_count++] = handle;
+            traversal_complete = 0;
+            break;
+        }
+
+        char data_name[PILOT_MODULE_NAME_CAPACITY];
+        const PilotApi *module_api = 0;
+        PilotStatus api_status = module_data_name(names[i], data_name)
+            ? pilot_api_for_module(data_name, &module_api)
+            : PILOT_STATUS_INVALID_ARGUMENT;
+        if (api_status != PILOT_STATUS_OK || !module_api) {
+            char message[192];
+            int length = snprintf(message, sizeof(message),
+                                  "Pilot module API binding failed name=%s status=%d",
+                                  names[i], api_status);
+            if (length > 0 && (size_t)length < sizeof(message))
+                module_log(message);
+            __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
+            g_pilot.module_handles[g_pilot.module_count++] = handle;
+            traversal_complete = 0;
+            break;
+        }
+
+        if (init(module_api) != PILOT_STATUS_OK) {
             module_log("Pilot module initialization failed; remaining modules skipped");
             __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
             g_pilot.module_handles[g_pilot.module_count++] = handle;
+            traversal_complete = 0;
             break;
         }
 
@@ -339,9 +448,15 @@ void pilot_load_modules(void)
         else {
             module_log("Pilot module limit reached; remaining modules skipped");
             __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
+            traversal_complete = 0;
             break;
         }
 
         module_log("Pilot module initialized");
     }
+
+    if (traversal_complete &&
+        pilot_fuse_append_state(PILOT_FUSE_STATE_COMPLETE,
+                                package_hash) != PILOT_STATUS_OK)
+        module_log("Pilot module fuse completion record failed");
 }

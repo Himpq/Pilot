@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#define PILOT_MODULE_MAX_COUNT 16u
+
 typedef int (*pilot_mkdir_fn)(const char *path);
 typedef int (*pilot_write_file_fn)(const char *path,
                                    const void *data,
@@ -48,6 +50,14 @@ struct pilot_fsys_check_diagnostic {
     int pf2_inner;
 };
 
+enum pilot_fuse_state {
+    PILOT_FUSE_STATE_NONE = 0,
+    PILOT_FUSE_STATE_ARMED = 1,
+    PILOT_FUSE_STATE_COMPLETE = 2,
+    PILOT_FUSE_STATE_TRIPPED = 3,
+    PILOT_FUSE_STATE_INVALID = 4
+};
+
 struct pilot_mount_args {
     void *drive_descriptor;
     unsigned char mount_flags;
@@ -84,9 +94,16 @@ PilotStatus pilot_fsys_read_all(const struct pilot_fsys_api *api,
                                 size_t capacity,
                                 size_t *length_out,
                                 int *not_found_out);
+PilotStatus pilot_fsys_write_new_file(const char *path,
+                                      const void *data,
+                                      size_t length);
 PilotStatus pilot_log_append(const char *line,
                              size_t length,
                              int optional_api_call);
+PilotStatus pilot_fuse_read_state(enum pilot_fuse_state *state_out,
+                                  uint64_t *package_out);
+PilotStatus pilot_fuse_append_state(enum pilot_fuse_state state,
+                                    uint64_t package);
 
 PilotStatus pilot_time_utc_impl(char *buffer, size_t capacity);
 PilotStatus pilot_memory_read_impl(uintptr_t address,
@@ -99,6 +116,46 @@ PilotStatus pilot_memory_patch_impl(uintptr_t address,
 PilotStatus pilot_get_module_dir_impl(const char *module_name,
                                      char *buffer,
                                      size_t capacity);
+PilotStatus pilot_module_file_read_impl(const char *module_name,
+                                       const char *file_name,
+                                       void *buffer,
+                                       size_t capacity,
+                                       size_t *length_out);
+PilotStatus pilot_module_file_write_impl(const char *module_name,
+                                        const char *file_name,
+                                        const void *data,
+                                        size_t length);
+PilotStatus pilot_module_file_append_impl(const char *module_name,
+                                         const char *file_name,
+                                         const void *data,
+                                         size_t length);
+PilotStatus pilot_api_for_module(const char *module_name,
+                                 const PilotApi **api_out);
+PilotStatus pilot_file_read(const PilotFileApi *file,
+                            const char *file_name,
+                            char *buffer,
+                            size_t capacity);
+PilotStatus pilot_file_write(const PilotFileApi *file,
+                             const char *file_name,
+                             const char *text);
+PilotStatus pilot_file_append(const PilotFileApi *file,
+                              const char *file_name,
+                              const char *text);
+PilotStatus pilot_file_read_bytes(const PilotFileApi *file,
+                                  const char *file_name,
+                                  void *buffer,
+                                  size_t capacity,
+                                  size_t *length_out);
+PilotStatus pilot_file_write_bytes(const PilotFileApi *file,
+                                   const char *file_name,
+                                   const void *data,
+                                   size_t length);
+PilotStatus pilot_file_append_bytes(const PilotFileApi *file,
+                                    const char *file_name,
+                                    const void *data,
+                                    size_t length);
+PilotStatus pilot_module_log_print(const PilotModuleLogApi *log,
+                                   const char *message);
 void pilot_load_modules(void);
 void pilot_runtime_mount_worker(struct pilot_mount_args mount_args,
                                 pilot_mkdir_fn mkdir_path,

@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "pilot_internal.h"
 
+#include <dlfcn.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
@@ -10,7 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
+
+#define PILOT_MOUNT_RETRY_COUNT 5u
+#define PILOT_MOUNT_RETRY_NS 50000000l
 
 struct pilot_card_log_job {
     char drive_letter;
@@ -20,11 +25,13 @@ struct pilot_card_log_job {
 };
 
 _Static_assert(offsetof(struct pilot_mount_args, mount_flags) == 8,
-               "mount argument layout changed");
+               "A6700 mount argument layout changed");
 
 static atomic_flag pilot_started = ATOMIC_FLAG_INIT;
 static unsigned int card_worker_state[52];
 static pthread_mutex_t card_state_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t runtime_lock = PTHREAD_MUTEX_INITIALIZER;
+static int runtime_active;
 
 struct pilot_runtime g_pilot = {
     .optional_features_enabled = 0,
@@ -79,6 +86,12 @@ void pilot_runtime_mount_worker(struct pilot_mount_args mount_args,
                                 pilot_write_file_fn write_file,
                                 char drive_letter)
 {
+    pthread_mutex_lock(&runtime_lock);
+    if (runtime_active && g_pilot.drive_letter != drive_letter) {
+        pthread_mutex_unlock(&runtime_lock);
+        return;
+    }
+
     g_pilot.drive_letter = drive_letter;
     g_pilot.mount_flags = mount_args.mount_flags;
     g_pilot.mkdir_path = mkdir_path;
@@ -97,10 +110,9 @@ void pilot_runtime_mount_worker(struct pilot_mount_args mount_args,
         log_size <= 0 || (size_t)log_size >= sizeof(g_pilot.log_path)) {
         pilot_set_feature_state(0);
         pilot_runtime_log("PILOT_GATE=closed reason=path_format\n");
+        pthread_mutex_unlock(&runtime_lock);
         return;
     }
-
-    (void)mkdir_path(directory);
 
     char gate_detail[176];
     const char *missing_symbol = 0;
@@ -116,9 +128,18 @@ void pilot_runtime_mount_worker(struct pilot_mount_args mount_args,
                  gate_detail, drive_letter);
         pilot_runtime_log(receipt);
     } else {
-        int marker_state = pilot_fsys_check_disable(directory, marker,
+        int marker_state = -1;
+        const struct timespec retry_delay = {0, PILOT_MOUNT_RETRY_NS};
+        for (unsigned int attempt = 0; attempt < PILOT_MOUNT_RETRY_COUNT;
+             ++attempt) {
+            if (mkdir_path) (void)mkdir_path(directory);
+            marker_state = pilot_fsys_check_disable(directory, marker,
                                                     &g_pilot.fsys,
                                                     &diagnostic);
+            if (marker_state >= 0) break;
+            if (attempt + 1u < PILOT_MOUNT_RETRY_COUNT)
+                (void)nanosleep(&retry_delay, 0);
+        }
         pilot_set_feature_state(marker_state == 0);
         if (marker_state == 1) {
             snprintf(gate_detail, sizeof(gate_detail), "gate=disable_marker");
@@ -160,12 +181,25 @@ void pilot_runtime_mount_worker(struct pilot_mount_args mount_args,
                  drive_letter, (unsigned int)mount_args.mount_flags,
                  gate_detail);
     }
-    PilotStatus log_status = pilot_log_append(line, strlen(line), 0);
+
+    PilotStatus log_status = PILOT_STATUS_IO;
+    const struct timespec retry_delay = {0, PILOT_MOUNT_RETRY_NS};
+    for (unsigned int attempt = 0; attempt < PILOT_MOUNT_RETRY_COUNT;
+         ++attempt) {
+        log_status = pilot_log_append(line, strlen(line), 0);
+        if (log_status == PILOT_STATUS_OK) break;
+        if (attempt + 1u < PILOT_MOUNT_RETRY_COUNT)
+            (void)nanosleep(&retry_delay, 0);
+    }
     pilot_runtime_log(log_status == PILOT_STATUS_OK
                           ? "PILOT_SD_LOG=written\n"
                           : "PILOT_SD_LOG=failed\n");
 
-    if (enabled) pilot_load_modules();
+    if (enabled) {
+        __atomic_store_n(&runtime_active, 1, __ATOMIC_RELEASE);
+        pilot_load_modules();
+    }
+    pthread_mutex_unlock(&runtime_lock);
 }
 
 static void *pilot_card_log_worker(void *opaque)
@@ -230,10 +264,70 @@ void pilot_a6700_v1_on_mount(
     pilot_runtime_log("Pilot mount worker creation failed\n");
 }
 
+static int drive_has_card(const struct pilot_fsys_api *fsys, char drive_letter)
+{
+    char path[32];
+    struct stat info;
+    snprintf(path, sizeof(path), "%c:/pilot", drive_letter);
+    memset(&info, 0, sizeof(info));
+    int status = fsys->stat_path(path, &info);
+    if (status == 0) return 1;
+    if (!pilot_fsys_is_not_found(fsys, status)) return 0;
+
+    snprintf(path, sizeof(path), "%c:/DCIM", drive_letter);
+    memset(&info, 0, sizeof(info));
+    return fsys->stat_path(path, &info) == 0;
+}
+
 static void *pilot_worker(void *unused)
 {
     (void)unused;
     pilot_runtime_log("pilot_worker started\n");
+
+    const struct timespec initial_delay = {0, 200000000l};
+    const struct timespec poll_delay = {0, 250000000l};
+    static const char candidates[] = "BXACDE";
+
+    (void)nanosleep(&initial_delay, 0);
+    for (unsigned int round = 0; round < 240u; ++round) {
+        if (__atomic_load_n(&runtime_active, __ATOMIC_ACQUIRE))
+            return 0;
+
+        struct pilot_fsys_api fsys;
+        if (pilot_fsys_resolve(&fsys, 0)) {
+            void *mkdir_symbol = dlsym(RTLD_DEFAULT, "Fsys_Mkdir");
+            pilot_mkdir_fn fsys_mkdir = 0;
+            if (mkdir_symbol && sizeof(fsys_mkdir) == sizeof(mkdir_symbol))
+                memcpy(&fsys_mkdir, &mkdir_symbol, sizeof(fsys_mkdir));
+
+            if (fsys_mkdir) {
+                for (size_t i = 0; candidates[i] != '\0'; ++i) {
+                    char drive = candidates[i];
+                    unsigned int index = drive_index(drive);
+                    pthread_mutex_lock(&card_state_lock);
+                    unsigned int state = card_worker_state[index];
+                    pthread_mutex_unlock(&card_state_lock);
+                    if (state != 0) continue;
+
+                    if (!drive_has_card(&fsys, drive)) continue;
+
+                    pthread_mutex_lock(&card_state_lock);
+                    if (card_worker_state[index] != 0) {
+                        pthread_mutex_unlock(&card_state_lock);
+                        continue;
+                    }
+                    card_worker_state[index] = 2;
+                    pthread_mutex_unlock(&card_state_lock);
+
+                    struct pilot_mount_args args = {0, 0};
+                    pilot_runtime_mount_worker(args, fsys_mkdir, 0, drive);
+                    if (__atomic_load_n(&runtime_active, __ATOMIC_ACQUIRE))
+                        return 0;
+                }
+            }
+        }
+        (void)nanosleep(&poll_delay, 0);
+    }
     return 0;
 }
 
