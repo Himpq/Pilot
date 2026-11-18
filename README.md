@@ -4,6 +4,9 @@
 [![Platform](https://img.shields.io/badge/Platform-AArch64%20%2F%20BIONZ%20XR-blue)](README.md)
 [![Status](https://img.shields.io/badge/Status-Experimental-orange)](README.md)
 
+<img width="400" alt="05083979-51cb-4126-b926-339e21e61a45" src="https://github.com/user-attachments/assets/01ff953c-8194-448d-98f2-8f38e3fe164e" />
+
+
 Pilot 是一个面向索尼相机固件的扩展框架，由常驻引导模块和按需加载的扩展模块组成。模块通过版本化 API 使用框架提供的能力。
 
 ## 特性
