@@ -14,6 +14,7 @@ for pilot_input in \
     "$pilot_root/patch/pilot_time.c" \
     "$pilot_root/patch/pilot_api.c" \
     "$pilot_root/patch/pilot_memory.c" \
+    "$pilot_root/patch/pilot_cp_mem.c" \
     "$pilot_root/patch/pilot_module_dir.c" \
     "$pilot_root/patch/pilot_module_files.c" \
     "$pilot_root/patch/pilot_modules.c"; do

@@ -19,6 +19,7 @@ mkdir -p "$(dirname "$OUT")"
     "$PATCH_DIR/pilot_time.c" \
     "$PATCH_DIR/pilot_api.c" \
     "$PATCH_DIR/pilot_memory.c" \
+    "$PATCH_DIR/pilot_cp_mem.c" \
     "$PATCH_DIR/pilot_module_dir.c" \
     "$PATCH_DIR/pilot_module_files.c" \
     "$PATCH_DIR/pilot_modules.c" \

@@ -435,6 +435,24 @@ void pilot_load_modules(void)
             break;
         }
 
+        /* Create <drive>:/pilot/modules/<stem>/ eagerly, so a module that
+         * never calls get_module_dir/file/mlog still gets its data folder.
+         * A failure is report-only: it must not skip the module, change the
+         * fuse state, disable optional features, or restart the traversal. */
+        {
+            char module_data_dir[128];
+            PilotStatus dir_status = pilot_get_module_dir_impl(
+                data_name, module_data_dir, sizeof(module_data_dir));
+            if (dir_status != PILOT_STATUS_OK) {
+                char message[192];
+                int length = snprintf(message, sizeof(message),
+                    "Pilot module data dir unavailable name=%s status=%d",
+                    names[i], (int)dir_status);
+                if (length > 0 && (size_t)length < sizeof(message))
+                    module_log(message);
+            }
+        }
+
         if (init(module_api) != PILOT_STATUS_OK) {
             module_log("Pilot module initialization failed; remaining modules skipped");
             __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);

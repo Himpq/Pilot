@@ -15,7 +15,7 @@ Pilot 是一个面向索尼相机固件的扩展框架，由常驻引导模块�
 - 挂载成功后按清单加载扩展模块
 - 模块先复制到 tmpfs 再加载，不占用可移动介质挂载
 - 卡上 `disable` 标记可关闭扩展加载
-- `PilotApiV1` 提供日志、时间和内存读写接口
+- `PilotApi` 提供 `file`、`log` 和 `mlog` 命名空间，以及时间和内存接口
 
 ## 目录结构
 
@@ -33,12 +33,14 @@ Pilot 是一个面向索尼相机固件的扩展框架，由常驻引导模块�
 ```c
 #include "pilot.h"
 
-PilotStatus pilot_module_init(const PilotApiV1 *api)
+PilotStatus pilot_module_init(const PilotApi *api)
 {
-    if (!api || api->abi_version != PILOT_ABI_VERSION_1)
+    if (!api || api->abi_version != PILOT_ABI_VERSION)
         return PILOT_STATUS_UNSUPPORTED;
 
-    api->log_write("pilot module loaded", 19);
+    api->file->write(api->file, "settings.cfg", "enabled=1\n");
+    api->log->print("pilot module loaded");
+    api->mlog->print(api->mlog, "module initialized");
     return PILOT_STATUS_OK;
 }
 ```

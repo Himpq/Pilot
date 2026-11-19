@@ -113,6 +113,16 @@ PilotStatus pilot_memory_patch_impl(uintptr_t address,
                                     const void *expected,
                                     const void *replacement,
                                     size_t length);
+PilotStatus pilot_cp_mem_read_impl(uint64_t cp_address,
+                                   void *output,
+                                   size_t length);
+PilotStatus pilot_cp_mem_write_impl(uint64_t cp_address,
+                                    const void *input,
+                                    size_t length);
+PilotStatus pilot_cp_mem_patch_impl(uint64_t cp_address,
+                                    const void *expected,
+                                    const void *replacement,
+                                    size_t length);
 PilotStatus pilot_get_module_dir_impl(const char *module_name,
                                      char *buffer,
                                      size_t capacity);

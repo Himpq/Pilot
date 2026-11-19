@@ -50,6 +50,14 @@ static const PilotLogApi g_log_api = {
     .print = api_log_print,
 };
 
+static const PilotCpMemApi g_cp_mem_api = {
+    .struct_size = sizeof(PilotCpMemApi),
+    .reserved = 0,
+    .read = pilot_cp_mem_read_impl,
+    .write = pilot_cp_mem_write_impl,
+    .patch = pilot_cp_mem_patch_impl,
+};
+
 static PilotApi g_api = {
     .abi_version = PILOT_ABI_VERSION,
     .struct_size = sizeof(PilotApi),
@@ -62,6 +70,7 @@ static PilotApi g_api = {
     .file = 0,
     .log = &g_log_api,
     .mlog = 0,
+    .cp_mem = &g_cp_mem_api,
 };
 
 static uint32_t api_base_features(void)
@@ -69,7 +78,8 @@ static uint32_t api_base_features(void)
     if (!__atomic_load_n(&g_pilot.optional_features_enabled, __ATOMIC_ACQUIRE))
         return 0;
     return PILOT_FEATURE_LOG | PILOT_FEATURE_TIME_UTC |
-           PILOT_FEATURE_APPFW_MEMORY | PILOT_FEATURE_MODULE_DIR;
+           PILOT_FEATURE_APPFW_MEMORY | PILOT_FEATURE_MODULE_DIR |
+           PILOT_FEATURE_CP_MEMORY;
 }
 
 static int valid_module_name(const char *name)

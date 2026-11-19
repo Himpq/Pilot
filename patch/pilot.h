@@ -11,6 +11,7 @@ extern "C" {
 #define PILOT_ABI_VERSION 2u
 #define PILOT_MODULE_INIT_SYMBOL "pilot_module_init"
 #define PILOT_MODULE_FILE_TRANSFER_MAX (1024u * 1024u)
+#define PILOT_CP_MEM_TRANSFER_MAX 4096u
 
 typedef int32_t PilotStatus;
 
@@ -31,12 +32,14 @@ enum {
     PILOT_FEATURE_TIME_UTC = 1u << 1,
     PILOT_FEATURE_APPFW_MEMORY = 1u << 2,
     PILOT_FEATURE_MODULE_DIR = 1u << 3,
-    PILOT_FEATURE_MODULE_FILES = 1u << 4
+    PILOT_FEATURE_MODULE_FILES = 1u << 4,
+    PILOT_FEATURE_CP_MEMORY = 1u << 5
 };
 
 typedef struct PilotFileApi PilotFileApi;
 typedef struct PilotLogApi PilotLogApi;
 typedef struct PilotModuleLogApi PilotModuleLogApi;
+typedef struct PilotCpMemApi PilotCpMemApi;
 
 struct PilotFileApi {
     uint32_t struct_size;
@@ -76,6 +79,17 @@ struct PilotModuleLogApi {
                          const char *message);
 };
 
+struct PilotCpMemApi {
+    uint32_t struct_size;
+    uint32_t reserved;
+    PilotStatus (*read)(uint64_t cp_address, void *output, size_t length);
+    PilotStatus (*write)(uint64_t cp_address, const void *input, size_t length);
+    PilotStatus (*patch)(uint64_t cp_address,
+                         const void *expected,
+                         const void *replacement,
+                         size_t length);
+};
+
 typedef struct PilotApi {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -101,6 +115,7 @@ typedef struct PilotApi {
     const PilotFileApi *file;
     const PilotLogApi *log;
     const PilotModuleLogApi *mlog;
+    const PilotCpMemApi *cp_mem;
 } PilotApi;
 
 typedef PilotStatus (*PilotModuleInit)(const PilotApi *api);
