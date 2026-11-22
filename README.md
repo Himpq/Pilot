@@ -160,3 +160,7 @@ PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.s
 ## Menu UI
 
 [菜单模块使用说明](modules/menu_ui/README.md)：在相机菜单中查看 Pilot 版本和模块列表。[下载 MenuUI v0.1.0](https://github.com/Himpq/Pilot/releases/tag/menu-ui-v0.1.0)。
+
+## 6K
+
+[6K 模块使用说明](modules/6k/README.md)：将 4K HS 24p 替换为 5760×3240／23.976p 录制。[下载 6K v0.1.0](https://github.com/Himpq/Pilot/releases/tag/6k-v0.1.0)。

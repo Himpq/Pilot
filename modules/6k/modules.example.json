@@ -1,0 +1,5 @@
+{
+  "modules": [
+    "pilot_6k.so"
+  ]
+}

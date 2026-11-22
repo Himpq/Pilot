@@ -1,0 +1,4 @@
+{
+    global: pilot_module_init;
+    local: *;
+};
