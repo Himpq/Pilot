@@ -11,11 +11,11 @@ Pilot 是一个面向索尼相机固件的扩展框架，为模块提供非 Jiri
 
 ## 使用方式
 
-当前发布版：[v0.1.1](https://github.com/Himpq/Pilot/releases/tag/v0.1.1)。适用 Sony ILCE-6700 固件 2.00，模块 ABI 为 2。电脑端工具需要 Python 3.10 或更新版本。
+框架发布下载：[Releases](https://github.com/Himpq/Pilot/releases)。适用 Sony ILCE-6700 固件 2.00，模块 ABI 为 2。电脑端工具需要 Python 3.10 或更新版本。
 
 ### 1. 准备文件
 
-下载并解压 `pilot-v0.1.1-a6700.zip`，获得 `pilot.so`、`sd/pilot/pilot_menu_ui.so`、清单示例和安装说明。
+从 Releases 下载所需版本的 `pilot.so`。
 下载源码包或克隆仓库，在仓库根目录运行后续命令：
 
 ```sh
@@ -66,27 +66,10 @@ python tools/pilot.py flash install @pilotArgs --yes
 `check` 按配置中的目标版本比对；升级前仍是旧版时，会报告 `persistent bootstrap: mismatch`。
 操作记录位于指定状态目录的 `device-state.json`，原文件备份位于其中的 `backups/`。
 
-### 3. 安装 Menu UI 模块
+### 3. 安装扩展模块
 
-将 SD 卡插入读卡器。下面假设卡盘符为 `D:`，发布包解压到 `F:/PilotDownloads/v0.1.1/`：
-
-```powershell
-$menuHash = "8ca356b5c82d33e61bace7213d8c34811bf808c2f3cc44327dfddab6d00f8f41"
-python tools/pilot.py modules deploy F:/PilotDownloads/v0.1.1/sd/pilot/pilot_menu_ui.so --card D:/ --sha256 $menuHash --backup-dir F:/PilotLocal/backups
-python tools/pilot.py modules list --card D:/
-```
-
-部署工具会备份同名旧模块和原清单，再复制模块并更新 `/pilot/modules.json`，保留其他模块及加载顺序。
-装卡开机后，进入“自定义设置 → Pilot”，可查看版本、模块清单状态和文件路径。
-
-手动安装时，将 `pilot_menu_ui.so` 放到 SD 卡 `/pilot/`，在现有清单的 `modules` 数组中加入文件名。
-首次创建清单可使用：
-
-```json
-{
-  "modules": ["pilot_menu_ui.so"]
-}
-```
+将模块文件放入 SD 卡 `/pilot/`，并将文件名加入现有 `/pilot/modules.json` 的 `modules` 数组，保留其他条目及加载顺序。
+模块的兼容性、下载和具体使用方式以各自的发布说明为准。
 
 ### 4. 日志与停用
 
@@ -105,7 +88,7 @@ python tools/pilot.py flash restore @pilotArgs --yes
 ```
 
 `restore` 恢复该配置记录的 AP 修改窗口，完成后完整断电重启；SD 卡模块和常驻库文件保留。
-更多镜像补丁、AP/CP RAM 模块构建与工具参数见 [通用工具说明](tools/README.md)，菜单行为见 [Menu UI 说明](modules/menu_ui/README.md)。
+更多镜像补丁、AP/CP RAM 模块构建与工具参数见 [通用工具说明](tools/README.md)。
 
 ## 特性
 
@@ -161,7 +144,6 @@ PilotStatus pilot_module_init(const PilotApi *api)
 
 ```sh
 PILOT_SYSROOT=/path/to/target/sysroot bash patch/build_pilot_dso.sh
-PILOT_A6700_SYSROOT=/path/to/target/sysroot bash modules/menu_ui/build.sh
 PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.sh
 ```
 
@@ -174,7 +156,3 @@ PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.s
 ## 通用补丁工具
 
 [`tools/README.md`](tools/README.md) 提供补丁描述校验、离线镜像修改、AP/CP RAM 模块构建、SD 模块部署与日志导出。相机刷写通过外部本地配置调用 `on_camera.py`；研究资料与设备记录保留在本机。
-
-## Menu UI
-
-[`modules/menu_ui/`](modules/menu_ui/) 提供 ILCE-6700 2.00 的 Pilot 菜单入口、版本和模块清单显示。构建、安装及验证说明见模块 README。
