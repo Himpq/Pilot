@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -130,6 +131,25 @@ static void module_log(const char *message)
     const PilotApi *api = pilot_a6700_get_api();
     if (api && api->log && api->log->print)
         (void)api->log->print(message);
+}
+
+/* Per-module lines must carry the manifest name: the main log has no other
+ * way to tell which module succeeded or failed. Prefixing here keeps every
+ * call site consistent and stays below the 768-byte api_log_write() limit. */
+static void module_log_named(const char *name, const char *format, ...)
+{
+    char body[640];
+    va_list args;
+    va_start(args, format);
+    int length = vsnprintf(body, sizeof(body), format, args);
+    va_end(args);
+    if (length <= 0 || (size_t)length >= sizeof(body)) return;
+
+    char message[768];
+    int total = snprintf(message, sizeof(message), "name=%s %s",
+                         name ? name : "unknown", body);
+    if (total > 0 && (size_t)total < sizeof(message))
+        module_log(message);
 }
 
 static int ensure_directory(const char *path)
@@ -319,6 +339,13 @@ void pilot_load_modules(void)
         __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
         return;
     }
+    {
+        char message[128];
+        int length = snprintf(message, sizeof(message),
+                              "Pilot modules.json loaded count=%zu", count);
+        if (length > 0 && (size_t)length < sizeof(message))
+            module_log(message);
+    }
 
     uint64_t package_hash = package_hash_update(PILOT_FNV64_OFFSET,
                                                manifest, manifest_length);
@@ -344,12 +371,8 @@ void pilot_load_modules(void)
                                                 &staged_total_bytes,
                                                 &package_hash);
         if (stage_status != PILOT_STATUS_OK) {
-            char message[192];
-            int length = snprintf(message, sizeof(message),
-                                  "Pilot module staging failed name=%s status=0x%08x; remaining modules skipped",
-                                  names[i], (unsigned int)stage_status);
-            if (length > 0 && (size_t)length < sizeof(message))
-                module_log(message);
+            module_log_named(names[i], "Pilot module staging failed status=%d; remaining modules skipped",
+                             (int)stage_status);
             __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
             return;
         }
@@ -391,15 +414,14 @@ void pilot_load_modules(void)
             break;
         }
 
+        module_log_named(names[i], "Pilot module loading index=%zu/%zu path=%s",
+                         i + 1, count, staged_paths[i]);
+
         void *handle = dlopen(staged_paths[i], RTLD_NOW | RTLD_GLOBAL);
         if (!handle) {
             const char *error = dlerror();
-            char message[256];
-            int length = snprintf(message, sizeof(message),
-                                  "Pilot dlopen failed path=%s error=%s",
-                                  staged_paths[i], error ? error : "unknown");
-            if (length > 0 && (size_t)length < sizeof(message))
-                module_log(message);
+            module_log_named(names[i], "Pilot module dlopen failed error=%s",
+                             error ? error : "unknown");
             __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
             traversal_complete = 0;
             break;
@@ -410,7 +432,7 @@ void pilot_load_modules(void)
         if (symbol && sizeof(init) == sizeof(symbol))
             memcpy(&init, &symbol, sizeof(init));
         if (!init) {
-            module_log("Pilot module init symbol missing; remaining modules skipped");
+            module_log_named(names[i], "Pilot module init symbol missing; remaining modules skipped");
             __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
             g_pilot.module_handles[g_pilot.module_count++] = handle;
             traversal_complete = 0;
@@ -423,12 +445,8 @@ void pilot_load_modules(void)
             ? pilot_api_for_module(data_name, &module_api)
             : PILOT_STATUS_INVALID_ARGUMENT;
         if (api_status != PILOT_STATUS_OK || !module_api) {
-            char message[192];
-            int length = snprintf(message, sizeof(message),
-                                  "Pilot module API binding failed name=%s status=%d",
-                                  names[i], api_status);
-            if (length > 0 && (size_t)length < sizeof(message))
-                module_log(message);
+            module_log_named(names[i], "Pilot module API binding failed status=%d",
+                             (int)api_status);
             __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
             g_pilot.module_handles[g_pilot.module_count++] = handle;
             traversal_complete = 0;
@@ -444,17 +462,15 @@ void pilot_load_modules(void)
             PilotStatus dir_status = pilot_get_module_dir_impl(
                 data_name, module_data_dir, sizeof(module_data_dir));
             if (dir_status != PILOT_STATUS_OK) {
-                char message[192];
-                int length = snprintf(message, sizeof(message),
-                    "Pilot module data dir unavailable name=%s status=%d",
-                    names[i], (int)dir_status);
-                if (length > 0 && (size_t)length < sizeof(message))
-                    module_log(message);
+                module_log_named(names[i], "Pilot module data dir unavailable status=%d",
+                                 (int)dir_status);
             }
         }
 
-        if (init(module_api) != PILOT_STATUS_OK) {
-            module_log("Pilot module initialization failed; remaining modules skipped");
+        PilotStatus init_status = init(module_api);
+        if (init_status != PILOT_STATUS_OK) {
+            module_log_named(names[i], "Pilot module initialization failed status=%d; remaining modules skipped",
+                             (int)init_status);
             __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
             g_pilot.module_handles[g_pilot.module_count++] = handle;
             traversal_complete = 0;
@@ -464,13 +480,14 @@ void pilot_load_modules(void)
         if (g_pilot.module_count < PILOT_MODULE_MAX_COUNT)
             g_pilot.module_handles[g_pilot.module_count++] = handle;
         else {
-            module_log("Pilot module limit reached; remaining modules skipped");
+            module_log_named(names[i], "Pilot module limit reached; remaining modules skipped");
             __atomic_store_n(&g_pilot.optional_features_enabled, 0, __ATOMIC_RELEASE);
             traversal_complete = 0;
             break;
         }
 
-        module_log("Pilot module initialized");
+        module_log_named(names[i], "Pilot module initialized index=%zu/%zu status=0",
+                         i + 1, count);
     }
 
     if (traversal_complete &&

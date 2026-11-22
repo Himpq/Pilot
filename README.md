@@ -17,6 +17,19 @@ Pilot 是一个面向索尼相机固件的扩展框架，为模块提供非 Jiri
 - 卡上 `disable` 标记可关闭扩展加载
 - `PilotApi` 提供 `file`、`log` 和 `mlog` 命名空间，以及时间和内存接口
 
+## 启动日志
+
+`/pilot/log.txt` 在每次启动记录前写入一个空行，便于区分不同启动。
+模块加载记录包含清单文件名、加载顺序和初始化状态；加载失败时记录具体模块及错误。
+
+```text
+
+2026-11-22T00:00:00Z Pilot startup: ...
+2026-11-22T00:00:00Z Pilot modules.json loaded count=1
+2026-11-22T00:00:00Z name=pilot_menu_ui.so Pilot module loading index=1/1 path=/tmp_wbshd/pilot/modules/pilot_menu_ui.so
+2026-11-22T00:00:00Z name=pilot_menu_ui.so Pilot module initialized index=1/1 status=0
+```
+
 ## 目录结构
 
 | 路径 | 内容 |
@@ -50,7 +63,7 @@ PilotStatus pilot_module_init(const PilotApi *api)
 ```sh
 bash patch/build_pilot_dso.sh
 bash patch/build_pilot.sh
-bash modules/menu_ui_probe/build.sh
+PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.sh
 ```
 
 通过 `PILOT_SYSROOT`、`PILOT_CC` 等环境变量指定 sysroot 与交叉编译器。

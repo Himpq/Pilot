@@ -167,17 +167,17 @@ void pilot_runtime_mount_worker(struct pilot_mount_args mount_args,
     if (enabled && pilot_time_utc_impl(timestamp, sizeof(timestamp)) ==
                        PILOT_STATUS_OK) {
         snprintf(line, sizeof(line),
-                 "%s Pilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=enabled, %s)\n",
+                 "\n%s Pilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=enabled, %s)\n",
                  timestamp, drive_letter, (unsigned int)mount_args.mount_flags,
                  gate_detail);
     } else if (enabled) {
         snprintf(line, sizeof(line),
-                 "Pilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=enabled, time=unavailable, %s)\n",
+                 "\nPilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=enabled, time=unavailable, %s)\n",
                  drive_letter, (unsigned int)mount_args.mount_flags,
                  gate_detail);
     } else {
         snprintf(line, sizeof(line),
-                 "Pilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=disabled, %s)\n",
+                 "\nPilot startup: Fsys mount succeeded on drive %c (mount_flags=%u, optional_features=disabled, %s)\n",
                  drive_letter, (unsigned int)mount_args.mount_flags,
                  gate_detail);
     }
