@@ -1,0 +1,21 @@
+{
+  "schema": "pilot.patch.v1",
+  "id": "synthetic-demo",
+  "kind": "file",
+  "target": {
+    "model": "SYNTHETIC",
+    "firmware": "demo",
+    "component": "demo.bin",
+    "size_bytes": 14,
+    "sha256": "632ab73a33ed548a4bcddc469e89d47096040c5061d689611270715a38a59b13",
+    "patched_sha256": "3c94cd6fdf75e397880af60affb4b2807d91babe98022383d13f6f59972797e1"
+  },
+  "patches": [
+    {
+      "id": "first-two-bytes",
+      "offset": 0,
+      "before": "6f72",
+      "after": "4f52"
+    }
+  ]
+}

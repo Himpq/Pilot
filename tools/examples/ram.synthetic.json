@@ -1,0 +1,28 @@
+{
+  "schema": "pilot.patch.v1",
+  "id": "synthetic-ram-demo",
+  "kind": "ram",
+  "target": {
+    "model": "SYNTHETIC",
+    "firmware": "demo",
+    "component": "appFw.so",
+    "size_bytes": 14,
+    "sha256": "632ab73a33ed548a4bcddc469e89d47096040c5061d689611270715a38a59b13"
+  },
+  "patches": [
+    {
+      "id": "ap-demo",
+      "space": "ap",
+      "address": "0x100",
+      "before": "0000",
+      "after": "0100"
+    },
+    {
+      "id": "cp-demo",
+      "space": "cp",
+      "address": "0x1000000",
+      "before": "00",
+      "after": "03"
+    }
+  ]
+}

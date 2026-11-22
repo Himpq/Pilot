@@ -71,3 +71,11 @@ PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.s
 ## 许可
 
 仅限在合法授权的设备上使用，本仓库仅供个人研究学习，避免复杂的Jiritsu注入。
+
+## 通用补丁工具
+
+[`tools/README.md`](tools/README.md) 提供补丁描述校验、离线镜像修改、AP/CP RAM 模块构建、SD 模块部署与日志导出。相机刷写通过外部本地配置调用 `on_camera.py`；研究资料与设备记录保留在本机。
+
+## Menu UI
+
+[`modules/menu_ui/`](modules/menu_ui/) 提供 ILCE-6700 2.00 的 Pilot 菜单入口、版本和模块清单显示。构建、安装及验证说明见模块 README。

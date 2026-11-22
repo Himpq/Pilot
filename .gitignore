@@ -1,3 +1,8 @@
 build/
 __pycache__/
 *.pyc
+
+# Machine-local research configuration and device records
+/patch.json
+/local/
+/private/
