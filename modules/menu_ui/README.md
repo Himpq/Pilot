@@ -2,6 +2,8 @@
 
 在相机“自定义设置”菜单中增加 Pilot 入口，查看 Pilot 版本、模块列表、启用状态与文件路径。
 
+[下载 MenuUI v0.1.0](https://github.com/Himpq/Pilot/releases/tag/menu-ui-v0.1.0)
+
 ![Pilot 菜单界面](assets/menu-preview.png)
 
 ## 安装

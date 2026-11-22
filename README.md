@@ -159,4 +159,4 @@ PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.s
 
 ## Menu UI
 
-[菜单模块使用说明](modules/menu_ui/README.md)：在相机菜单中查看 Pilot 版本和模块列表。
+[菜单模块使用说明](modules/menu_ui/README.md)：在相机菜单中查看 Pilot 版本和模块列表。[下载 MenuUI v0.1.0](https://github.com/Himpq/Pilot/releases/tag/menu-ui-v0.1.0)。
