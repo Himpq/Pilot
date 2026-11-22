@@ -156,3 +156,7 @@ PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.s
 ## 通用补丁工具
 
 [`tools/README.md`](tools/README.md) 提供补丁描述校验、离线镜像修改、AP/CP RAM 模块构建、SD 模块部署与日志导出。相机刷写通过外部本地配置调用 `on_camera.py`；研究资料与设备记录保留在本机。
+
+## Menu UI
+
+[菜单模块使用说明](modules/menu_ui/README.md)：在相机菜单中查看 Pilot 版本和模块列表。
