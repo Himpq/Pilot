@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-AArch64%20%2F%20BIONZ%20XR-blue)](docs/USAGE.md)
 
-Pilot 是面向索尼相机的模块化扩展框架。它为相机加载独立模块，让开发者可以围绕相机功能构建、更新和组合自己的扩展。
+Pilot 是索尼相机的模块化扩展框架，支持运行时访问 AP / CP 内存，并从 SD 卡加载功能模块。
 
 <table>
   <tr>
@@ -12,7 +12,7 @@ Pilot 是面向索尼相机的模块化扩展框架。它为相机加载独立�
   </tr>
 </table>
 
-## 功能与特性
+## Features
 
 - **模块化扩展**：通过 SD 卡清单选择和组合模块，框架负责加载与初始化。
 - **相机菜单**：[Menu UI](modules/menu_ui/README.md) 在相机中展示 Pilot 版本和模块列表。
@@ -20,7 +20,7 @@ Pilot 是面向索尼相机的模块化扩展框架。它为相机加载独立�
 - **运行时内存访问**：通过统一接口读取、写入和修改 AP / CP 内存，CP 接口支持异步操作和 UIPC v4 批量写入。
 - **文件与日志**：模块可以使用独立数据目录和日志，查看启动、加载及运行状态。
 
-## 方便开发
+## Develop
 
 模块只需实现 `pilot_module_init`，即可通过 `PilotApi` 使用文件、日志、时间和内存等能力。`sdk/pilot_mod_util.h` 提供常用辅助函数；通用工具支持补丁描述、模块构建、部署和日志导出。
 
