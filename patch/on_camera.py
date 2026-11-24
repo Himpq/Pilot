@@ -426,10 +426,13 @@ def main() -> int:
     group.add_argument("--restore", action="store_true", help="restore the four original AP windows")
     group.add_argument("--update-pilot", action="store_true", help="update /usr/lib/pilot.so in place")
     group.add_argument("--clean", action="store_true", help="remove recognized Pilot flash staging files")
+    group.add_argument("--prepare-ap", action="store_true", help="read AP and prepare a camera-specific patch and writer")
     group.add_argument("--cp-check", action="store_true", help="check configured CP patch")
     group.add_argument("--cp-install", action="store_true", help="install configured CP patch")
     group.add_argument("--cp-restore", action="store_true", help="restore configured CP patch")
     parser.add_argument("--yes", action="store_true", help="required for write operations")
+    parser.add_argument("--output-dir", type=Path, help="new directory for the AP preparation")
+    parser.add_argument("--cc", default="clang", help="Clang executable with AArch64 and LLD support")
     add_path_arguments(parser)
     args = parser.parse_args()
 
@@ -441,6 +444,32 @@ def main() -> int:
     PILOT_DSO_PATH = paths.pilot
     FLASH_MODULE_PATH = paths.writer
     STATE_DIR = paths.state_dir
+    if args.prepare_ap:
+        if args.output_dir is None:
+            parser.error("--prepare-ap requires --output-dir")
+        import prepare_ap
+        patch_map = load_map()
+        pilot = PILOT_DSO_PATH.read_bytes()
+        cr = load_transport(paths.transport_root)
+        with cr.Session(skip_hasp=True) as session:
+            image = read_ap(session)
+        result = prepare_ap.prepare(patch_map, image, pilot, args.output_dir, args.cc)
+        if result["already_installed"]:
+            print("AP patch windows already match the target; no preparation files created.")
+        else:
+            print(f"AP preparation: {result['directory']}")
+        print(f"before sha256={result['before_sha256']}")
+        print(f"after  sha256={result['after_sha256']}")
+        for item in result["windows"]:
+            print(f"  {item['id']} offset={item['file_offset']} length={item['length']} state={item['state']} differences={item['different_bytes']}")
+            if item["state"] == "different":
+                for diff in item["differences"][:16]:
+                    print(f"    {diff['file_offset']}: actual={diff['actual']} declared={diff['declared_original']} target={diff['target']}")
+                if len(item["differences"]) > 16 and not result["already_installed"]:
+                    print("    More differences are listed in preflight-report.json")
+        if not result["already_installed"]:
+            print("Review preflight-report.json before choosing whether to install.")
+        return 0
     if args.cp_check or args.cp_install or args.cp_restore:
         import cp_flash
         spec = cp_flash.load_config(MAP_PATH)

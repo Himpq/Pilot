@@ -97,6 +97,12 @@ class PatchTests(unittest.TestCase):
             self.assertTrue(run.call_args.args[0][1].endswith("patch\\on_camera.py") or
                             run.call_args.args[0][1].endswith("patch/on_camera.py"))
 
+    def test_ap_prepare_forwards_plan_paths(self):
+        with mock.patch("pilot_tool.cli.subprocess.run") as run:
+            run.return_value.returncode = 0
+            self.assertEqual(cli_main(["flash", "prepare-ap", "--pilot", "pilot.so", "--output-dir", "plan", "--cc", "clang"]), 0)
+            self.assertEqual(run.call_args.args[0][2:], ["--prepare-ap", "--pilot", "pilot.so", "--output-dir", "plan", "--cc", "clang"])
+
 
 if __name__ == "__main__":
     unittest.main()

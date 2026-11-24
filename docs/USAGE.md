@@ -13,6 +13,22 @@ cd Pilot
 python tools/pilot.py --help
 ```
 
+### 为相机生成 AP 安装配置
+
+安装 `requirements-camera.txt` 的依赖，并准备支持 AArch64 和 LLD 的 Clang。将相机连接到电脑后，先读取当前 AP 并生成配套文件：
+
+```powershell
+python tools/pilot.py flash prepare-ap --map patch.a6700.json --pilot ./pilot.so --output-dir ./ap-plan --cc clang
+```
+
+预检不写入相机。它会输出各补丁位置的当前值与配置差异，并在 `ap-plan/` 保存完整的 `preflight-report.json`、安装前备份、匹配当前相机的 `patch.json` 和 `pilot_ap_flash.so`。检查报告，决定是否覆盖不同的位置后再执行：
+
+```powershell
+python tools/pilot.py flash install --map ./ap-plan/patch.json --writer ./ap-plan/pilot_ap_flash.so --pilot ./ap-plan/pilot.so --yes
+```
+
+生成的配置记录本次读取的安装前字节；恢复时使用相同的配置和刷写器。安装前如 AP 文件发生变化，需要重新预检。
+
 首次安装或更新常驻框架还需要以下本机材料：
 
 | 材料 | 内容 |
