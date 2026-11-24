@@ -41,12 +41,14 @@ def parser():
     logs.add_argument("--card", required=True, type=Path)
     logs.add_argument("--out", required=True, type=Path)
     flash = commands.add_parser("flash", help="call on_camera.py with external local inputs")
-    flash.add_argument("action", choices=("check", "install", "restore", "update-pilot", "clean", "cp-check", "cp-install", "cp-restore"))
+    flash.add_argument("action", choices=("check", "install", "restore", "update-pilot", "clean", "prepare-ap", "cp-check", "cp-install", "cp-restore"))
     flash.add_argument("--map", dest="map_path", type=Path)
     flash.add_argument("--transport-root", type=Path)
     flash.add_argument("--state-dir", type=Path)
     flash.add_argument("--writer", type=Path)
     flash.add_argument("--pilot", type=Path)
+    flash.add_argument("--output-dir", type=Path)
+    flash.add_argument("--cc", help="Clang executable for AP writer generation")
     flash.add_argument("--yes", action="store_true")
     return root
 
@@ -92,6 +94,9 @@ def main(argv=None):
             for name in ("writer", "pilot"):
                 if getattr(args, name) is not None:
                     command.extend(["--" + name, str(getattr(args, name))])
+            for option, value in (("--output-dir", args.output_dir), ("--cc", args.cc)):
+                if value is not None:
+                    command.extend([option, str(value)])
             if args.yes:
                 command.append("--yes")
             return subprocess.run(command, check=False).returncode
