@@ -9,8 +9,16 @@ struct pilot_patch_window {
     const unsigned char *after;
 };
 
-#include "pilot_ap_flash_data.h"
-#include "pilot_bootstrap_data.h"
+#define PILOT_AP_WINDOW_COUNT 4u
+#define PILOT_AP_MAX_WINDOW_SIZE 4096u
+#define PILOT_PLAN_MAX (24u + 16u * PILOT_AP_WINDOW_COUNT + 2u * PILOT_AP_WINDOW_COUNT * PILOT_AP_MAX_WINDOW_SIZE)
+
+__attribute__((visibility("default"), used))
+const unsigned int pilot_ap_generic_v1 = 0x50414731u;
+
+static unsigned char pilot_plan[PILOT_PLAN_MAX];
+static struct pilot_patch_window pilot_patch_windows[PILOT_AP_WINDOW_COUNT];
+static u64 pilot_ap_file_size;
 
 #ifndef PILOT_BOOTSTRAP_PATH
 #ifdef PILOT_FLASH_TEST
@@ -42,6 +50,12 @@ struct pilot_patch_window {
 #ifndef PILOT_FLASH_RESULT_PATH
 #define PILOT_FLASH_RESULT_PATH "/tmp/jiritsu/pilotflash.result"
 #endif
+#ifndef PILOT_FLASH_PLAN_PATH
+#define PILOT_FLASH_PLAN_PATH "/tmp/jiritsu/pilotflash-plan.bin"
+#endif
+#ifndef PILOT_FLASH_PILOT_PATH
+#define PILOT_FLASH_PILOT_PATH "/tmp/jiritsu/pilotflash-pilot.so"
+#endif
 #define APPFW_PATH PILOT_FLASH_TEST_APPFW_PATH
 #else
 #define APPFW_PATH "/usr/lib/appFw.so"
@@ -50,9 +64,13 @@ struct pilot_patch_window {
 #ifdef PILOT_FLASH_TEST
 #define MODE_PATH PILOT_FLASH_MODE_PATH
 #define RESULT_PATH PILOT_FLASH_RESULT_PATH
+#define PLAN_PATH PILOT_FLASH_PLAN_PATH
+#define PILOT_SOURCE_PATH PILOT_FLASH_PILOT_PATH
 #else
 #define MODE_PATH "/tmp/jiritsu/pilotflash.mode"
 #define RESULT_PATH "/tmp/jiritsu/pilotflash.result"
+#define PLAN_PATH "/tmp/jiritsu/pilotflash-plan.bin"
+#define PILOT_SOURCE_PATH "/tmp/jiritsu/pilotflash-pilot.so"
 #endif
 
 static long syscall6(long number, long a0, long a1, long a2,
@@ -141,6 +159,53 @@ static int pwrite_exact(long fd, const void *buffer, usize size, u64 offset)
         total += (usize)count;
     }
     return 1;
+}
+
+static u64 plan_uint(const unsigned char *data, usize width)
+{
+    u64 value = 0;
+    for (usize i = 0; i < width; ++i) value |= (u64)data[i] << (8u * i);
+    return value;
+}
+
+static int load_patch_plan(void)
+{
+    static const unsigned char magic[8] = {'P','I','L','O','T','A','P','1'};
+    long fd = open_file(PLAN_PATH, O_RDONLY, 0);
+    if (fd < 0) return 0;
+    long size = file_size(fd);
+    if (size < 88 || size > (long)sizeof(pilot_plan) ||
+        !pread_exact(fd, pilot_plan, (usize)size, 0)) {
+        (void)close_file(fd);
+        return 0;
+    }
+    (void)close_file(fd);
+    for (usize i = 0; i < sizeof(magic); ++i)
+        if (pilot_plan[i] != magic[i]) return 0;
+    if (plan_uint(pilot_plan + 8, 4) != 1 ||
+        plan_uint(pilot_plan + 12, 4) != PILOT_AP_WINDOW_COUNT) return 0;
+    pilot_ap_file_size = plan_uint(pilot_plan + 16, 8);
+    if (!pilot_ap_file_size) return 0;
+    usize payload = 24u + 16u * PILOT_AP_WINDOW_COUNT;
+    for (usize i = 0; i < PILOT_AP_WINDOW_COUNT; ++i) {
+        const unsigned char *row = pilot_plan + 24u + 16u * i;
+        u64 offset = plan_uint(row, 8);
+        u64 length = plan_uint(row + 8, 4);
+        if (plan_uint(row + 12, 4) != 0 || !length || length > PILOT_AP_MAX_WINDOW_SIZE ||
+            offset > pilot_ap_file_size || length > pilot_ap_file_size - offset ||
+            payload > (usize)size || length * 2u > (usize)size - payload) return 0;
+        for (usize j = 0; j < i; ++j) {
+            u64 other = pilot_patch_windows[j].offset;
+            u64 other_end = other + pilot_patch_windows[j].length;
+            if (offset < other_end && other < offset + length) return 0;
+        }
+        pilot_patch_windows[i].offset = offset;
+        pilot_patch_windows[i].length = (usize)length;
+        pilot_patch_windows[i].before = pilot_plan + payload;
+        pilot_patch_windows[i].after = pilot_plan + payload + (usize)length;
+        payload += (usize)length * 2u;
+    }
+    return payload == (usize)size;
 }
 
 static u64 usr_mount_flags;
@@ -386,40 +451,57 @@ static int write_state(long fd, int target_patched)
     return sync_file(fd) == 0;
 }
 
-/* Install the exact embedded bootstrap before enabling its AP entry point. */
+/* Install the staged bootstrap before enabling its AP entry point. */
 static long install_bootstrap_mode(int allow_replace)
 {
-    unsigned char buffer[1024];
+    unsigned char source_buffer[1024], target_buffer[1024];
+    long source = open_file(PILOT_SOURCE_PATH, O_RDONLY, 0);
+    if (source < 0) return source;
+    long source_size = file_size(source);
+    if (source_size < 64 || source_size > 65536) {
+        (void)close_file(source);
+        return -1005;
+    }
     long fd = open_file(PILOT_BOOTSTRAP_PATH, O_RDONLY, 0);
     if (fd >= 0) {
-        int matches = (u64)file_size(fd) == sizeof(pilot_bootstrap);
-        for (usize off = 0; matches && off < sizeof(pilot_bootstrap);) {
-            usize count = sizeof(pilot_bootstrap) - off;
-            if (count > sizeof(buffer)) count = sizeof(buffer);
-            matches = pread_exact(fd, buffer, count, off) &&
-                      bytes_equal(buffer, pilot_bootstrap + off, count);
+        int matches = file_size(fd) == source_size;
+        for (usize off = 0; matches && off < (usize)source_size;) {
+            usize count = (usize)source_size - off;
+            if (count > sizeof(source_buffer)) count = sizeof(source_buffer);
+            matches = pread_exact(source, source_buffer, count, off) &&
+                      pread_exact(fd, target_buffer, count, off) &&
+                      bytes_equal(source_buffer, target_buffer, count);
             off += count;
         }
         (void)close_file(fd);
-        if (matches) return 0;
-        if (!allow_replace) return -1001;
+        if (matches) { (void)close_file(source); return 0; }
+        if (!allow_replace) { (void)close_file(source); return -1001; }
         fd = open_file(PILOT_BOOTSTRAP_PATH, O_RDWR | O_TRUNC, 0644);
     } else {
-        if (fd != -2) return fd;
+        if (fd != -2) { (void)close_file(source); return fd; }
         fd = open_file(PILOT_BOOTSTRAP_PATH, O_RDWR | O_CREAT | 128, 0644);
     }
-    if (fd < 0) return fd;
-    int ok = pwrite_exact(fd, pilot_bootstrap, sizeof(pilot_bootstrap), 0);
+    if (fd < 0) { (void)close_file(source); return fd; }
+    int ok = 1;
+    for (usize off = 0; ok && off < (usize)source_size;) {
+        usize count = (usize)source_size - off;
+        if (count > sizeof(source_buffer)) count = sizeof(source_buffer);
+        ok = pread_exact(source, source_buffer, count, off) &&
+             pwrite_exact(fd, source_buffer, count, off);
+        off += count;
+    }
     long result = ok ? sync_file(fd) : -1002;
-    if (!result && (u64)file_size(fd) != sizeof(pilot_bootstrap)) result = -1003;
-    for (usize off = 0; !result && off < sizeof(pilot_bootstrap);) {
-        usize count = sizeof(pilot_bootstrap) - off;
-        if (count > sizeof(buffer)) count = sizeof(buffer);
-        if (!pread_exact(fd, buffer, count, off) ||
-            !bytes_equal(buffer, pilot_bootstrap + off, count)) result = -1004;
+    if (!result && file_size(fd) != source_size) result = -1003;
+    for (usize off = 0; !result && off < (usize)source_size;) {
+        usize count = (usize)source_size - off;
+        if (count > sizeof(source_buffer)) count = sizeof(source_buffer);
+        if (!pread_exact(source, source_buffer, count, off) ||
+            !pread_exact(fd, target_buffer, count, off) ||
+            !bytes_equal(source_buffer, target_buffer, count)) result = -1004;
         off += count;
     }
     (void)close_file(fd);
+    (void)close_file(source);
     return result;
 }
 
@@ -457,7 +539,7 @@ static void run_check(const char *mode)
         emit_result("RESULT=FAIL\nreason=open_read");
         return;
     }
-    if ((u64)file_size(fd) != PILOT_AP_FILE_SIZE) {
+    if ((u64)file_size(fd) != pilot_ap_file_size) {
         (void)close_file(fd);
         emit_result("RESULT=FAIL\nreason=file_size");
         return;
@@ -482,7 +564,7 @@ static void run_write(const char *mode, int target_patched)
         emit_result("RESULT=FAIL\nreason=open_read");
         return;
     }
-    if ((u64)file_size(read_fd) != PILOT_AP_FILE_SIZE) {
+    if ((u64)file_size(read_fd) != pilot_ap_file_size) {
         (void)close_file(read_fd);
         emit_result("RESULT=FAIL\nreason=file_size");
         return;
@@ -573,6 +655,11 @@ void _init(void)
     char mode[24];
     if (!read_mode(mode, sizeof(mode))) {
         emit_result("RESULT=FAIL\nreason=no_mode");
+        return;
+    }
+    if ((text_is(mode, "check") || text_is(mode, "write") || text_is(mode, "restore")) &&
+        !load_patch_plan()) {
+        emit_result("RESULT=FAIL\nreason=invalid_plan");
         return;
     }
     if (text_is(mode, "check")) {

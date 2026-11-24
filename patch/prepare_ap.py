@@ -1,9 +1,9 @@
-"""Prepare a per-camera AP patch plan and writer without writing to the camera."""
+"""Prepare a per-camera AP patch plan without writing to the camera."""
 from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
+import struct
 from pathlib import Path
 
 WINDOW_IDS = ("post_fsys_mount_branch", "post_fsys_mount_dlopen_island",
@@ -14,14 +14,38 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def c_array(name: str, data: bytes) -> str:
-    lines = [f"static const unsigned char {name}[] = {{"]
-    for offset in range(0, len(data), 16):
-        lines.append("    " + ", ".join(f"0x{x:02x}" for x in data[offset:offset + 16]) + ",")
-    return "\n".join(lines + ["};", ""])
+def encode_plan(windows: list[tuple[str, int, bytes, bytes]], image_size: int) -> bytes:
+    if len(windows) != len(WINDOW_IDS) or not isinstance(image_size, int) or image_size <= 0:
+        raise ValueError("four AP patch windows and an image size are required")
+    seen = []
+    for name, offset, before, after in windows:
+        if (name != WINDOW_IDS[len(seen)] or not isinstance(offset, int) or offset < 0 or
+                not before or len(before) > 4096 or len(before) != len(after) or offset + len(before) > image_size):
+            raise ValueError(f"invalid AP patch window: {name}")
+        if any(offset < end and start < offset + len(before) for start, end in seen):
+            raise ValueError(f"overlapping AP patch window: {name}")
+        seen.append((offset, offset + len(before)))
+    header = struct.pack("<8sIIQ", b"PILOTAP1", 1, len(windows), image_size)
+    table = b"".join(struct.pack("<QII", offset, len(before), 0) for _, offset, before, _ in windows)
+    return header + table + b"".join(before + after for _, _, before, after in windows)
 
 
-def prepare(config: dict, image: bytes, pilot: bytes, output: Path, cc: str) -> dict:
+def plan_from_config(config: dict) -> bytes:
+    entries = {entry["id"]: entry for entry in config["patches"]}
+    if len(entries) != len(config["patches"]) or any(name not in entries for name in WINDOW_IDS):
+        raise ValueError("AP patch map is missing required windows")
+    windows = []
+    for name in WINDOW_IDS:
+        entry = entries[name]
+        offset = int(entry["file_offset"], 0) if isinstance(entry["file_offset"], str) else entry["file_offset"]
+        before, after = bytes.fromhex(entry["original_bytes"]), bytes.fromhex(entry["target_bytes"])
+        if entry["length"] != len(before):
+            raise ValueError(f"invalid patch length: {name}")
+        windows.append((name, offset, before, after))
+    return encode_plan(windows, config["target"]["binary_size"])
+
+
+def prepare(config: dict, image: bytes, pilot: bytes, output: Path, writer_data: bytes) -> dict:
     if config.get("schema") != "pilot.patch-map.v1":
         raise ValueError("unsupported patch map")
     target = config["target"]
@@ -57,29 +81,14 @@ def prepare(config: dict, image: bytes, pilot: bytes, output: Path, cc: str) -> 
     if candidate == image:
         return {"already_installed": True, "before_sha256": digest(image),
                 "after_sha256": digest(candidate), "windows": report}
+    if (len(writer_data) < 64 or len(writer_data) > 65536 or writer_data[:6] != b"\x7fELF\x02\x01" or
+            int.from_bytes(writer_data[18:20], "little") != 183 or b"pilot_ap_generic_v1\0" not in writer_data):
+        raise ValueError("generic AArch64 AP writer required")
     output.mkdir(parents=True, exist_ok=False)
     (output / "appFw.before.so").write_bytes(image)
     (output / "pilot.so").write_bytes(pilot)
-    headers = [f'#define PILOT_AP_BASELINE_SHA256 "{digest(image)}"',
-               f'#define PILOT_AP_PATCHED_SHA256 "{digest(candidate)}"',
-               f'#define PILOT_AP_FILE_SIZE {len(image)}ULL',
-               f'#define PILOT_AP_WINDOW_COUNT {len(windows)}',
-               f'#define PILOT_AP_MAX_WINDOW_SIZE {max(len(w[2]) for w in windows)}', ""]
-    for i, (_, _, before, after) in enumerate(windows):
-        headers.extend((c_array(f"pilot_before_{i}", before), c_array(f"pilot_after_{i}", after)))
-    headers.append("static const struct pilot_patch_window pilot_patch_windows[] = {")
-    for i, (_, offset, before, _) in enumerate(windows):
-        headers.append(f"    {{ 0x{offset:x}ULL, sizeof(pilot_before_{i}), pilot_before_{i}, pilot_after_{i} }},")
-    headers.append("};\n")
-    (output / "pilot_ap_flash_data.h").write_text("\n".join(headers), encoding="utf-8", newline="\n")
-    (output / "pilot_bootstrap_data.h").write_text(c_array("pilot_bootstrap", pilot), encoding="utf-8", newline="\n")
-    writer = output / "pilot_ap_flash.so"
-    source = Path(__file__).with_name("pilot_ap_flash.c")
-    command = [cc, "--target=aarch64-linux-gnu", "-fuse-ld=lld", "-std=c11", "-Os", "-march=armv8-a", "-fPIC", "-fvisibility=hidden", "-fno-stack-protector", "-fno-builtin", "-Wall", "-Wextra", "-Werror", "-shared", "-nostdlib", "-Wl,-init,_init", "-Wl,--no-undefined", "-Wl,--build-id=none", "-I", str(output.resolve()), "-o", str(writer.resolve()), str(source.resolve())]
-    subprocess.run(command, check=True)
-    writer_data = writer.read_bytes()
-    if len(writer_data) > 65536 or writer_data[:6] != b"\x7fELF\x02\x01" or int.from_bytes(writer_data[18:20], "little") != 183:
-        raise ValueError("generated writer is not an AArch64 ELF64 under 64 KiB")
+    (output / "pilot_ap_flash.so").write_bytes(writer_data)
+    (output / "patch.bin").write_bytes(encode_plan(windows, len(image)))
     plan = {"schema": "pilot.patch-map.v1", "target": {"model": target["model"], "firmware": target["firmware"],
             "binary_size": len(image), "binary_sha256": digest(image), "patched_binary_sha256": digest(candidate)},
             "pilot_dso": {"size_bytes": len(pilot), "sha256": digest(pilot)},

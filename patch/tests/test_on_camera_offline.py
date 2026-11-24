@@ -76,7 +76,7 @@ class OnCameraOfflineTests(unittest.TestCase):
         paths = resolve_paths(args, Path("independent-checkout"))
         self.assertEqual(paths.patch_map, Path("independent-checkout/patch.a6700.json"))
         self.assertEqual(paths.writer,
-                         Path("independent-checkout/build/pilot_ap_flash.so"))
+                         Path("independent-checkout/patch/pilot_ap_flash.so"))
         self.assertEqual(paths.pilot, Path("independent-checkout/build/pilot.so"))
         self.assertEqual(paths.state_dir,
                          Path("independent-checkout/build/device-state"))
@@ -138,6 +138,38 @@ class OnCameraOfflineTests(unittest.TestCase):
                 sys.modules.pop("cpload_run", None)
             else:
                 sys.modules["cpload_run"] = old
+
+    def test_generic_writer_stages_plan_and_pilot(self):
+        module = load_on_camera()
+        from prepare_ap import WINDOW_IDS, plan_from_config
+        class Session:
+            def __init__(self):
+                self.files = {}
+                self.path = None
+                self.staged = {}
+            def select(self, path):
+                self.path = path
+            def read_path(self, path, missing=False):
+                return self.files.get(path)
+            def jiritsu(self, command, data, missing=False):
+                if command == 18:
+                    self.files.pop(self.path, None)
+                elif command == 16:
+                    self.files[self.path] = data[3:]
+                    self.staged[self.path] = data[3:]
+                    if self.path == module.FLASH_FILES["trigger"]:
+                        self.files[module.FLASH_FILES["result"]] = b"A6700PILOTFLASH\nRESULT=OK\n"
+        patch_map = {"target": {"binary_size": 256}, "patches": [
+            {"id": name, "file_offset": offset, "length": 4,
+             "original_bytes": "00000000", "target_bytes": "01020304"}
+            for name, offset in zip(WINDOW_IDS, (32, 64, 96, 128))]}
+        session = Session()
+        result = module.run_flash_module(session, b"writer", "write", patch_map, b"pilot")
+        self.assertIn(b"RESULT=OK", result)
+        self.assertEqual(session.staged[module.FLASH_FILES["plan"]], plan_from_config(patch_map))
+        self.assertEqual(session.staged[module.FLASH_FILES["pilot"]], b"pilot")
+        self.assertNotIn(module.FLASH_FILES["plan"], session.files)
+        self.assertNotIn(module.FLASH_FILES["pilot"], session.files)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ PATCH_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PATCH_DIR.parent
 MAP_PATH = REPO_ROOT / "patch.json"
 PILOT_DSO_PATH = REPO_ROOT / "build" / "pilot.so"
-FLASH_MODULE_PATH = REPO_ROOT / "build" / "pilot_ap_flash.so"
+FLASH_MODULE_PATH = REPO_ROOT / "patch" / "pilot_ap_flash.so"
 STATE_DIR = REPO_ROOT / "build" / "device-state"
 AP_PATH = "/tmp/jiritsu/../../usr/lib/appFw.so"
 PILOT_DEVICE_PATH = "/tmp/jiritsu/../../usr/lib/pilot.so"
@@ -29,6 +29,8 @@ FLASH_FILES = {
     "staged": "/tmp/jiritsu/pilotflash-staged.so",
     "mode": "/tmp/jiritsu/pilotflash.mode",
     "result": "/tmp/jiritsu/pilotflash.result",
+    "plan": "/tmp/jiritsu/pilotflash-plan.bin",
+    "pilot": "/tmp/jiritsu/pilotflash-pilot.so",
 }
 FLASH_HEADER = b"A6700PILOTFLASH\n"
 FLASH_POLL_SECONDS = 120
@@ -121,6 +123,8 @@ def load_writer(patch_map: dict) -> bytes:
         raise RuntimeError("AP writer is not an ELF64 module")
     if int.from_bytes(writer[18:20], "little") != 183:
         raise RuntimeError("AP writer is not an AArch64 module")
+    if b"pilot_ap_generic_v1\0" not in writer:
+        raise RuntimeError("generic AP writer required")
     return writer
 
 
@@ -165,12 +169,17 @@ def remove_device_file(session: cr.Session, path: str) -> None:
     session.jiritsu(18, b"\0\xff", missing=True)
 
 
-def classify_owned_files(files: dict[str, bytes | None], writer: bytes) -> list[str]:
+def classify_owned_files(files: dict[str, bytes | None], writer: bytes,
+                         pilot: bytes | None = None, plan: bytes | None = None) -> list[str]:
     problems: list[str] = []
     for key, data in files.items():
         if data is None:
             continue
         if key in ("trigger", "staged") and data == writer:
+            continue
+        if key == "pilot" and pilot is not None and data == pilot:
+            continue
+        if key == "plan" and plan is not None and data == plan:
             continue
         if key == "mode" and data in (b"check\n", b"write\n", b"restore\n", b"pilot\n"):
             continue
@@ -180,9 +189,10 @@ def classify_owned_files(files: dict[str, bytes | None], writer: bytes) -> list[
     return problems
 
 
-def clean_owned_files(session: cr.Session, writer: bytes) -> None:
+def clean_owned_files(session: cr.Session, writer: bytes,
+                      pilot: bytes | None = None, plan: bytes | None = None) -> None:
     files = read_flash_files(session)
-    problems = classify_owned_files(files, writer)
+    problems = classify_owned_files(files, writer, pilot, plan)
     if problems:
         raise RuntimeError("; ".join(problems))
     for key, data in files.items():
@@ -209,11 +219,28 @@ def stage_pilot_dso(session: cr.Session, pilot: bytes,
     return current != pilot
 
 
-def run_flash_module(session: cr.Session, writer: bytes, mode: str) -> bytes:
+def run_flash_module(session: cr.Session, writer: bytes, mode: str,
+                     patch_map: dict | None = None, pilot: bytes | None = None) -> bytes:
     ensure_no_flash_files(session)
     staged_path = FLASH_FILES["staged"]
     mode_path = FLASH_FILES["mode"]
     trigger_path = FLASH_FILES["trigger"]
+
+    inputs: dict[str, bytes] = {}
+    if mode in ("write", "restore"):
+        if patch_map is None:
+            raise ValueError("AP patch map required")
+        from prepare_ap import plan_from_config
+        inputs["plan"] = plan_from_config(patch_map)
+    if mode in ("write", "pilot"):
+        if not pilot:
+            raise ValueError("pilot.so required")
+        inputs["pilot"] = pilot
+    for key, data in inputs.items():
+        session.select(FLASH_FILES[key])
+        session.jiritsu(16, b"\0\xff\0" + data)
+        if session.read_path(FLASH_FILES[key], missing=True) != data:
+            raise RuntimeError(f"AP writer {key} staging readback mismatch")
 
     session.select(mode_path)
     session.jiritsu(16, b"\0\xff\0" + (mode + "\n").encode("ascii"))
@@ -249,6 +276,12 @@ def run_flash_module(session: cr.Session, writer: bytes, mode: str) -> bytes:
         if key == "mode" and data != (mode + "\n").encode("ascii"):
             raise RuntimeError(f"{mode_path} changed during AP writer run")
         remove_device_file(session, FLASH_FILES[key])
+    for key, expected in inputs.items():
+        current = session.read_path(FLASH_FILES[key], missing=True)
+        if current is not None and current != expected:
+            raise RuntimeError(f"{FLASH_FILES[key]} changed during AP writer run")
+        if current is not None:
+            remove_device_file(session, FLASH_FILES[key])
     return result
 
 
@@ -334,7 +367,7 @@ def run_write(session: cr.Session, patch_map: dict, writer: bytes,
         return 0
 
     backup_device_files({"appFw.so": before, "pilot.so": session.read_path(PILOT_DEVICE_PATH, missing=True)})
-    result = run_flash_module(session, writer, mode)
+    result = run_flash_module(session, writer, mode, patch_map, pilot)
     print_result(result)
     after = read_ap(session)
     after_hash = sha256(after)
@@ -392,7 +425,7 @@ def run_update_pilot(session: cr.Session, patch_map: dict,
         return 0
 
     backup_device_files({"pilot.so": current})
-    result = run_flash_module(session, writer, "pilot")
+    result = run_flash_module(session, writer, "pilot", pilot=pilot)
     print_result(result)
     if b"RESULT=OK" not in result:
         return 6
@@ -432,7 +465,6 @@ def main() -> int:
     group.add_argument("--cp-restore", action="store_true", help="restore configured CP patch")
     parser.add_argument("--yes", action="store_true", help="required for write operations")
     parser.add_argument("--output-dir", type=Path, help="new directory for the AP preparation")
-    parser.add_argument("--cc", default="clang", help="Clang executable with AArch64 and LLD support")
     add_path_arguments(parser)
     args = parser.parse_args()
 
@@ -453,7 +485,8 @@ def main() -> int:
         cr = load_transport(paths.transport_root)
         with cr.Session(skip_hasp=True) as session:
             image = read_ap(session)
-        result = prepare_ap.prepare(patch_map, image, pilot, args.output_dir, args.cc)
+        writer = FLASH_MODULE_PATH.read_bytes()
+        result = prepare_ap.prepare(patch_map, image, pilot, args.output_dir, writer)
         if result["already_installed"]:
             print("AP patch windows already match the target; no preparation files created.")
         else:
@@ -498,7 +531,11 @@ def main() -> int:
             return run_check(session, patch_map)
         if args.clean:
             assert writer is not None
-            clean_owned_files(session, writer)
+            from prepare_ap import plan_from_config
+            staged = read_flash_files(session)
+            clean_pilot = load_pilot(patch_map) if staged["pilot"] is not None else None
+            clean_plan = plan_from_config(patch_map) if staged["plan"] is not None else None
+            clean_owned_files(session, writer, clean_pilot, clean_plan)
             return 0
         if args.update_pilot:
             assert writer is not None
