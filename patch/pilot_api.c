@@ -73,6 +73,7 @@ static PilotApi g_api = {
     .log = &g_log_api,
     .mlog = 0,
     .cp_mem = &g_cp_mem_api,
+    .version_string = PILOT_VERSION_STRING,
 };
 
 static uint32_t api_base_features(void)
