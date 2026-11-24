@@ -75,6 +75,17 @@ class PatchTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertEqual((root/"image.bin").read_bytes(), self.before)
 
+    def test_cp_code_address_and_patcher_region(self):
+        spec = copy.deepcopy(self.spec)
+        spec["kind"] = "ram"
+        spec["target"].pop("patched_sha256")
+        spec["target"]["component"] = "appFw.so"
+        spec["patches"] = [{"id": "cp", "space": "cp", "address": "0x128000", "before": "00", "after": "01"}]
+        validate_spec(spec)
+        spec["patches"][0]["address"] = "0xC12D68"
+        with self.assertRaises(ValueError):
+            validate_spec(spec)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -56,6 +56,8 @@ static const PilotCpMemApi g_cp_mem_api = {
     .read = pilot_cp_mem_read_impl,
     .write = pilot_cp_mem_write_impl,
     .patch = pilot_cp_mem_patch_impl,
+    .write_async = pilot_cp_mem_write_async_impl,
+    .patch_async = pilot_cp_mem_patch_async_impl,
 };
 
 static PilotApi g_api = {
