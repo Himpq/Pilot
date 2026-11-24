@@ -55,7 +55,8 @@ def prepare(config: dict, image: bytes, pilot: bytes, output: Path, cc: str) -> 
         windows.append((name, offset, before, after))
         candidate[offset:offset + length] = after
     if candidate == image:
-        raise ValueError("all AP patch windows already match target")
+        return {"already_installed": True, "before_sha256": digest(image),
+                "after_sha256": digest(candidate), "windows": report}
     output.mkdir(parents=True, exist_ok=False)
     (output / "appFw.before.so").write_bytes(image)
     (output / "pilot.so").write_bytes(pilot)
@@ -86,4 +87,4 @@ def prepare(config: dict, image: bytes, pilot: bytes, output: Path, cc: str) -> 
             "patches": [{"id": n, "file_offset": hex(o), "length": len(b), "original_bytes": b.hex(), "target_bytes": a.hex()} for n, o, b, a in windows]}
     (output / "patch.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (output / "preflight-report.json").write_text(json.dumps({"windows": report, "before_sha256": digest(image), "after_sha256": digest(candidate)}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    return {"directory": str(output.resolve()), "before_sha256": digest(image), "after_sha256": digest(candidate), "windows": report}
+    return {"already_installed": False, "directory": str(output.resolve()), "before_sha256": digest(image), "after_sha256": digest(candidate), "windows": report}

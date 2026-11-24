@@ -49,6 +49,16 @@ class PrepareTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "overlapping"):
                 prepare_ap.prepare(self.config, bytes(self.image), bytes(self.pilot), Path(temp) / "plan", "clang")
 
+    def test_already_installed_requires_no_writer(self):
+        for offset in (32, 64, 96, 128):
+            self.image[offset:offset + 4] = bytes.fromhex("01020304")
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(prepare_ap.subprocess, "run") as compiler:
+            out = Path(temp) / "plan"
+            result = prepare_ap.prepare(self.config, bytes(self.image), bytes(self.pilot), out, "clang")
+            self.assertTrue(result["already_installed"])
+            self.assertFalse(out.exists())
+            compiler.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

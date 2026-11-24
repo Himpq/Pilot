@@ -454,16 +454,21 @@ def main() -> int:
         with cr.Session(skip_hasp=True) as session:
             image = read_ap(session)
         result = prepare_ap.prepare(patch_map, image, pilot, args.output_dir, args.cc)
-        print(f"AP preparation: {result['directory']}")
+        if result["already_installed"]:
+            print("AP patch windows already match the target; no preparation files created.")
+        else:
+            print(f"AP preparation: {result['directory']}")
         print(f"before sha256={result['before_sha256']}")
         print(f"after  sha256={result['after_sha256']}")
         for item in result["windows"]:
             print(f"  {item['id']} offset={item['file_offset']} length={item['length']} state={item['state']} differences={item['different_bytes']}")
-            for diff in item["differences"][:16]:
-                print(f"    {diff['file_offset']}: actual={diff['actual']} declared={diff['declared_original']} target={diff['target']}")
-            if len(item["differences"]) > 16:
-                print("    More differences are listed in preflight-report.json")
-        print("Review preflight-report.json before choosing whether to install.")
+            if item["state"] == "different":
+                for diff in item["differences"][:16]:
+                    print(f"    {diff['file_offset']}: actual={diff['actual']} declared={diff['declared_original']} target={diff['target']}")
+                if len(item["differences"]) > 16 and not result["already_installed"]:
+                    print("    More differences are listed in preflight-report.json")
+        if not result["already_installed"]:
+            print("Review preflight-report.json before choosing whether to install.")
         return 0
     if args.cp_check or args.cp_install or args.cp_restore:
         import cp_flash
