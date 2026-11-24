@@ -10,7 +10,6 @@
 #include <string.h>
 
 #define PILOT_MENU_TITLE_DEFAULT "Pilot"
-#define PILOT_UI_VERSION_STRING "Pilot v0.1.1"
 #define PILOT_UI_DESC_STRING \
     "An a6700 Firmware AP module trying to provide\n" \
     "an auto reload RAM Patch framework without\n" \
@@ -155,10 +154,10 @@ struct tree_reg_entry {
 
 /* ---------- Declarative Pages ---------- */
 
-static const PilotUiComponent g_version_components[] = {
+static PilotUiComponent g_version_components[] = {
     {
         .kind = PILOT_UI_COMP_TEXT,
-        .label = PILOT_UI_VERSION_STRING,
+        .label = NULL,
         .x = 48,
         .y = 82,
         .w = 544,
@@ -1583,8 +1582,11 @@ PilotStatus pilot_module_init(const PilotApi *api)
         api->struct_size < sizeof(PilotApi))
         return PILOT_STATUS_INVALID_ARGUMENT;
 
+    if (!api->version_string)
+        return PILOT_STATUS_INVALID_ARGUMENT;
     pthread_mutex_lock(&g_lock);
     if (!g_installed) {
+        g_version_components[0].label = api->version_string;
         g_api = api;
         PilotStatus st = install_pilot_menu_ui();
         if (st == PILOT_STATUS_OK)

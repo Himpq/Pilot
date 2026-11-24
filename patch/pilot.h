@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 #define PILOT_ABI_VERSION 2u
+#define PILOT_VERSION_STRING "Pilot v0.2.0"
 #define PILOT_MODULE_INIT_SYMBOL "pilot_module_init"
 #define PILOT_MODULE_FILE_TRANSFER_MAX (1024u * 1024u)
 #define PILOT_CP_MEM_TRANSFER_MAX 4096u
@@ -137,6 +138,7 @@ typedef struct PilotApi {
     const PilotLogApi *log;
     const PilotModuleLogApi *mlog;
     const PilotCpMemApi *cp_mem;
+    const char *version_string;
 } PilotApi;
 
 typedef PilotStatus (*PilotModuleInit)(const PilotApi *api);
