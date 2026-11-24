@@ -4,7 +4,7 @@ from pathlib import Path
 _dlls = Path(sys.executable).parent / "Lib" / "site-packages" / "libusb_package"
 if _dlls.is_dir():
     os.environ["PATH"] = str(_dlls) + os.pathsep + os.environ.get("PATH", "")
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "vendor" / "pmca-re"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "vendor" / "pmca-re"))
 import usb.util
 from pmca.usb.sony import SONY_ID_VENDOR, SonySenserAuthDevice, SonySenserCamera, SonySenserDevice
 from pmca.usb.driver.generic import GenericUsbDriver, MscBbbDriver

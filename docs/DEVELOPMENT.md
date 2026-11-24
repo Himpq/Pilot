@@ -49,9 +49,9 @@ PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.s
 
 ```sh
 python -m pip install -r requirements-camera.txt
-python patch/on_camera.py --cp-check --map patch.a6700.json
-python patch/on_camera.py --cp-install --map patch.a6700.json --yes
-python patch/on_camera.py --cp-restore --map patch.a6700.json --yes
+python tools/pilot.py flash cp-check --map patch.a6700.json
+python tools/pilot.py flash cp-install --map patch.a6700.json --yes
+python tools/pilot.py flash cp-restore --map patch.a6700.json --yes
 ```
 
 写入前会备份 CP 文件，完成后检查完整文件并提示重启。当前支持补丁位置为原始状态时安装，以及匹配 v4 时还原；其他状态会显示为 `unknown`。

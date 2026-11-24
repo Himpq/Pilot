@@ -5,11 +5,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pilot_tool.spec import patch_image, validate_spec
 from pilot_tool.ram import generate_module
+from pilot_tool.cli import main as cli_main
 
 
 class PatchTests(unittest.TestCase):
@@ -85,6 +87,15 @@ class PatchTests(unittest.TestCase):
         spec["patches"][0]["address"] = "0xC12D68"
         with self.assertRaises(ValueError):
             validate_spec(spec)
+
+    def test_cp_flash_uses_camera_entry(self):
+        with mock.patch("pilot_tool.cli.subprocess.run") as run:
+            run.return_value.returncode = 0
+            self.assertEqual(cli_main(["flash", "cp-install", "--yes"]), 0)
+            self.assertIn("--cp-install", run.call_args.args[0])
+            self.assertIn("--yes", run.call_args.args[0])
+            self.assertTrue(run.call_args.args[0][1].endswith("patch\\on_camera.py") or
+                            run.call_args.args[0][1].endswith("patch/on_camera.py"))
 
 
 if __name__ == "__main__":
