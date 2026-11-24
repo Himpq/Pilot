@@ -1,95 +1,32 @@
 # Pilot
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-AArch64%20%2F%20BIONZ%20XR-blue)](README.md)
-[![Status](https://img.shields.io/badge/Status-Experimental-orange)](README.md)
+[![Platform](https://img.shields.io/badge/Platform-AArch64%20%2F%20BIONZ%20XR-blue)](docs/USAGE.md)
+
+Pilot 是索尼相机的模块化扩展框架，支持运行时访问 AP / CP 内存、写入代码区，并从 SD 卡加载功能模块。
 
 <table>
   <tr>
-    <td width="50%"><img width="400" alt="Pilot 界面" src="https://github.com/user-attachments/assets/01ff953c-8194-448d-98f2-8f38e3fe164e" /></td>
-    <td width="50%"><img width="400" alt="Pilot 菜单" src="modules/menu_ui/assets/menu-preview.png" /></td>
+    <td width="50%"><img width="100%" alt="Pilot 界面" src="https://github.com/user-attachments/assets/01ff953c-8194-448d-98f2-8f38e3fe164e" /></td>
+    <td width="50%"><img width="100%" alt="模块列表" src="assets/screenshots/module_list.png" /></td>
+  </tr>
+  <tr>
+    <td width="50%"><img width="100%" alt="模块详情" src="assets/screenshots/module_detail.png" /></td>
+    <td width="50%"><img width="100%" alt="实时画面绘图示例" src="assets/screenshots/canvas_ui_sample.png" /></td>
   </tr>
 </table>
 
+## Features
 
-Pilot 是一个面向索尼相机固件的扩展框架，为模块提供非 Jiritsu 依赖与运行时内存访问与便捷日志功能。
+- **运行时读写**：读取和修改 AP / CP 内存及代码区，CP 写入支持异步操作和 UIPC v4 批量处理。
+- **模块加载**：通过 SD 卡清单选择和组合模块，框架负责加载与初始化。
+- **文件与日志**：支持 SD 卡文件读写，以及框架和模块的独立日志。
 
-## 使用方式
+## Develop
 
-[安装、升级与使用指南](docs/USAGE.md)：准备文件、更新框架、安装模块、导出日志及停用恢复。
+模块只需实现 `pilot_module_init`，即可通过 `PilotApi` 使用文件、日志、时间和内存等能力。`sdk/pilot_mod_util.h` 提供常用辅助函数；通用工具支持补丁描述、模块构建、部署和日志导出。
 
-## 特性
-
-- 引导模块精简，常驻部分只负责加载调度
-- 挂载成功后按清单加载扩展模块
-- 模块先复制到 tmpfs 再加载，不占用可移动介质挂载
-- 卡上 `disable` 标记可关闭扩展加载
-- `PilotApi` 提供 `file`、`log` 和 `mlog` 命名空间，以及时间和内存接口
-
-## 启动日志
-
-`/pilot/log.txt` 在每次启动记录前写入一个空行，便于区分不同启动。
-模块加载记录包含清单文件名、加载顺序和初始化状态；加载失败时记录具体模块及错误。
-
-```text
-
-2026-11-22T00:00:00Z Pilot startup: ...
-2026-11-22T00:00:00Z Pilot modules.json loaded count=1
-2026-11-22T00:00:00Z name=pilot_menu_ui.so Pilot module loading index=1/1 path=/tmp_wbshd/pilot/modules/pilot_menu_ui.so
-2026-11-22T00:00:00Z name=pilot_menu_ui.so Pilot module initialized index=1/1 status=0
-```
-
-## 目录结构
-
-| 路径 | 内容 |
-|---|---|
-| `patch/` | 框架核心、API 和相机刷写入口 |
-| `modules/` | 扩展模块源码及其构建脚本 |
-| `tools/` | 通用补丁、模块部署和日志工具 |
-| `docs/` | 安装与使用文档 |
-| `build/` | 构建产物 |
-| `patch/tests/` | 测试脚本 |
-
-## 模块
-
-模块导出 `pilot_module_init`，接口定义在 `patch/pilot.h`。
-
-```c
-#include "pilot.h"
-
-PilotStatus pilot_module_init(const PilotApi *api)
-{
-    if (!api || api->abi_version != PILOT_ABI_VERSION)
-        return PILOT_STATUS_UNSUPPORTED;
-
-    api->file->write(api->file, "settings.cfg", "enabled=1\n");
-    api->log->print("pilot module loaded");
-    api->mlog->print(api->mlog, "module initialized");
-    return PILOT_STATUS_OK;
-}
-```
-
-## 构建
-
-```sh
-PILOT_SYSROOT=/path/to/target/sysroot bash patch/build_pilot_dso.sh
-PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.sh
-```
-
-通过 `PILOT_SYSROOT`、`PILOT_CC` 等环境变量指定 sysroot 与交叉编译器。
-
-## 许可
-
-仅限在合法授权的设备上使用，本仓库仅供个人研究学习，避免复杂的Jiritsu注入。
-
-## 通用补丁工具
-
-[`tools/README.md`](tools/README.md) 提供补丁描述校验、离线镜像修改、AP/CP RAM 模块构建、SD 模块部署与日志导出。相机刷写通过外部本地配置调用 `on_camera.py`；研究资料与设备记录保留在本机。
-
-## Menu UI
-
-[菜单模块使用说明](modules/menu_ui/README.md)：在相机菜单中查看 Pilot 版本和模块列表。[下载 MenuUI v0.1.0](https://github.com/Himpq/Pilot/releases/tag/menu-ui-v0.1.0)。
-
-## 6K
-
-[6K 模块使用说明](modules/6k/README.md)：将 4K HS 24p 替换为 5760×3240／23.976p 录制。[下载 6K v0.1.0](https://github.com/Himpq/Pilot/releases/tag/6k-v0.1.0)。
+- [安装与使用](docs/USAGE.md)
+- [模块开发与构建](docs/DEVELOPMENT.md)
+- [通用补丁工具](tools/README.md)
+- [下载模块和框架](https://github.com/Himpq/Pilot/releases)
