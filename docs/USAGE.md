@@ -19,7 +19,7 @@ python tools/pilot.py --help
 |---|---|
 | `patch.json` | 匹配当前相机 AP 基线的完整 `pilot.patch-map.v1` 配置 |
 | `pilot_ap_flash.so` | 与配置、目标 `pilot.so` 配套的刷写器，内部嵌入待安装的框架 |
-| USB transport 目录 | `cpload_run.py` 及其所需的本机 USB 环境 |
+| USB 环境 | 安装 `requirements-camera.txt` 中的依赖 |
 | 本机状态目录 | 存放原文件备份和设备操作记录 |
 
 上述材料保留在本机，通过命令参数指定。`patch.a6700.json` 是结构说明；安装使用包含目标哈希、框架及刷写器哈希的完整配置。
@@ -34,7 +34,7 @@ $pilotArgs = @(
   "--map", "F:/PilotLocal/patch.json",
   "--writer", "F:/PilotLocal/pilot_ap_flash.so",
   "--pilot", "F:/PilotLocal/pilot.so",
-  "--transport-root", "F:/PilotLocal/transport",
+  "--transport-root", "./patch",
   "--state-dir", "F:/PilotLocal/device-state"
 )
 

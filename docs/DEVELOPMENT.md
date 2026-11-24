@@ -33,7 +33,7 @@ PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.s
 | 路径 | 内容 |
 |---|---|
 | `patch/` | 框架核心、API 和 AP 相机刷写入口 |
-| `cp/uipc_v4/` | CP UIPC v4 处理器及其镜像补丁描述 |
+| `patch/cp/uipc_v4/` | CP UIPC v4 处理器源码 |
 | `sdk/` | 模块开发辅助函数 |
 | `modules/` | 扩展模块源码及构建脚本 |
 | `tools/` | 补丁、模块部署和日志工具 |
@@ -45,6 +45,15 @@ PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.s
 
 ## CP 补丁
 
-`cp/uipc_v4/patch.json` 使用 `pilot.patch.v1` 格式，可以通过 `python tools/pilot.py image` 对匹配的本地 CP 镜像生成补丁或还原。相机上的 CP 补丁刷写目前使用 FireHydrant 的 `fl2_fl3/cp_uipc_patch.py` 和 `cpdelta.so`；Pilot 的 `patch/on_camera.py` 负责 AP 启动补丁及 Pilot 框架安装。两者都使用外部 `cpload_run.py` USB transport。
+根目录 `patch.a6700.json` 中的 `cp.patch` 保存 CP 补丁描述。相机刷写统一使用 `patch/on_camera.py`：
+
+```sh
+python -m pip install -r requirements-camera.txt
+python patch/on_camera.py --cp-check --map patch.a6700.json
+python patch/on_camera.py --cp-install --map patch.a6700.json --yes
+python patch/on_camera.py --cp-restore --map patch.a6700.json --yes
+```
+
+写入前会备份 CP 文件，完成后检查完整文件并提示重启。当前支持补丁位置为原始状态时安装，以及匹配 v4 时还原；其他状态会显示为 `unknown`。
 
 [返回首页](../README.md)

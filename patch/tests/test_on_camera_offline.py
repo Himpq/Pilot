@@ -74,14 +74,14 @@ class OnCameraOfflineTests(unittest.TestCase):
         add_path_arguments(parser)
         args = parser.parse_args([])
         paths = resolve_paths(args, Path("independent-checkout"))
-        self.assertEqual(paths.patch_map, Path("independent-checkout/patch.json"))
+        self.assertEqual(paths.patch_map, Path("independent-checkout/patch.a6700.json"))
         self.assertEqual(paths.writer,
                          Path("independent-checkout/build/pilot_ap_flash.so"))
         self.assertEqual(paths.pilot, Path("independent-checkout/build/pilot.so"))
         self.assertEqual(paths.state_dir,
                          Path("independent-checkout/build/device-state"))
         self.assertEqual(paths.transport_root,
-                         Path("fl2_fl3"))
+                         Path("independent-checkout/patch"))
 
     def test_state_write_does_not_mutate_patch_map(self):
         module = load_on_camera()

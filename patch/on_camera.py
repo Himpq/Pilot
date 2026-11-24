@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check, install, restore, or clean the Pilot A6700 AP startup patch."""
+"""Manage Pilot and the configured AP and CP camera patches."""
 
 from __future__ import annotations
 
@@ -426,18 +426,29 @@ def main() -> int:
     group.add_argument("--restore", action="store_true", help="restore the four original AP windows")
     group.add_argument("--update-pilot", action="store_true", help="update /usr/lib/pilot.so in place")
     group.add_argument("--clean", action="store_true", help="remove recognized Pilot flash staging files")
-    parser.add_argument("--yes", action="store_true", help="required for --install, --restore, and --update-pilot")
+    group.add_argument("--cp-check", action="store_true", help="check configured CP patch")
+    group.add_argument("--cp-install", action="store_true", help="install configured CP patch")
+    group.add_argument("--cp-restore", action="store_true", help="restore configured CP patch")
+    parser.add_argument("--yes", action="store_true", help="required for write operations")
     add_path_arguments(parser)
     args = parser.parse_args()
 
-    if (args.install or args.restore or args.update_pilot) and not args.yes:
-        parser.error("--install, --restore, and --update-pilot require --yes")
+    if (args.install or args.restore or args.update_pilot or args.cp_install or args.cp_restore) and not args.yes:
+        parser.error("write operations require --yes")
     paths = resolve_paths(args, REPO_ROOT)
     global MAP_PATH, PILOT_DSO_PATH, FLASH_MODULE_PATH, STATE_DIR
     MAP_PATH = paths.patch_map
     PILOT_DSO_PATH = paths.pilot
     FLASH_MODULE_PATH = paths.writer
     STATE_DIR = paths.state_dir
+    if args.cp_check or args.cp_install or args.cp_restore:
+        import cp_flash
+        spec = cp_flash.load_config(MAP_PATH)
+        cr = load_transport(paths.transport_root)
+        action = "install" if args.cp_install else "restore" if args.cp_restore else "check"
+        with cr.Session(skip_hasp=True) as session:
+            cp_flash.run(session, spec, action, STATE_DIR / "cp-backups")
+        return 0
     patch_map = load_map()
     writer = None if args.check else load_writer(patch_map)
     pilot = load_pilot(patch_map) if (args.install or args.update_pilot) else b""
