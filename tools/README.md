@@ -63,7 +63,7 @@ python tools/pilot.py flash install --map F:/PilotLocal/patch.json --writer F:/P
 
 刷写入口使用现有 `pilot.patch-map.v1`，与通用补丁描述 `pilot.patch.v1` 分开。
 `--map` 必须提供匹配固件的完整描述和产物哈希；公开说明用的 `patch.a6700.json` 不含完整安装产物信息。
-USB transport 由本机提供 `cpload_run.py`。帮助、离线校验和 SD 卡操作不加载该依赖。
+仓库的 `patch/cpload_run.py` 提供 USB transport，依赖安装方式见 `requirements-camera.txt`。帮助、离线校验和 SD 卡操作不加载该依赖。
 真实写入前备份涉及的原文件，设备状态单独写入 `--state-dir/device-state.json`，不改补丁描述。
 
 ## 公开版同步与验证
