@@ -15,13 +15,13 @@ python tools/pilot.py --help
 
 ### 为相机生成 AP 安装配置
 
-安装 `requirements-camera.txt` 的依赖，并准备支持 AArch64 和 LLD 的 Clang。将相机连接到电脑后，先读取当前 AP 并生成配套文件：
+安装 `requirements-camera.txt` 的依赖。将相机连接到电脑后，先读取当前 AP 并生成配套文件：
 
 ```powershell
-python tools/pilot.py flash prepare-ap --map patch.a6700.json --pilot ./pilot.so --output-dir ./ap-plan --cc clang
+python tools/pilot.py flash prepare-ap --map patch.a6700.json --pilot ./pilot.so --output-dir ./ap-plan
 ```
 
-预检不写入相机。它会输出各补丁位置的当前值与配置差异，并在 `ap-plan/` 保存完整的 `preflight-report.json`、安装前备份、匹配当前相机的 `patch.json` 和 `pilot_ap_flash.so`。检查报告，决定是否覆盖不同的位置后再执行：
+预检不写入相机。它会输出各补丁位置的当前值与配置差异，并在 `ap-plan/` 保存完整的 `preflight-report.json`、安装前备份、匹配当前相机的 `patch.json`、补丁数据和通用刷写器。检查报告，决定是否覆盖不同的位置后再执行：
 
 ```powershell
 python tools/pilot.py flash install --map ./ap-plan/patch.json --writer ./ap-plan/pilot_ap_flash.so --pilot ./ap-plan/pilot.so --yes
@@ -33,13 +33,12 @@ python tools/pilot.py flash install --map ./ap-plan/patch.json --writer ./ap-pla
 
 | 材料 | 内容 |
 |---|---|
-| `patch.json` | 匹配当前相机 AP 基线的完整 `pilot.patch-map.v1` 配置 |
-| `pilot_ap_flash.so` | 与配置、目标 `pilot.so` 配套的刷写器，内部嵌入待安装的框架 |
+| `patch.json` | 预检时根据当前相机生成的完整配置 |
+| `pilot_ap_flash.so` | 预编译的通用刷写器，读取本次补丁数据和 `pilot.so` |
 | USB 环境 | 安装 `requirements-camera.txt` 中的依赖 |
 | 本机状态目录 | 存放原文件备份和设备操作记录 |
 
-上述材料保留在本机，通过命令参数指定。`patch.a6700.json` 是结构说明；安装使用包含目标哈希、框架及刷写器哈希的完整配置。
-更新框架版本时，配置和刷写器也要与新的 `pilot.so` 一起匹配。
+上述材料保留在本机，通过命令参数指定。`patch.a6700.json` 描述机型补丁；预检生成的配置记录当前相机、所选 `pilot.so` 和刷写器的校验值。
 
 ## 2. 检查与升级常驻框架
 

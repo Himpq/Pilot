@@ -48,8 +48,8 @@ def parser():
     flash.add_argument("--writer", type=Path)
     flash.add_argument("--pilot", type=Path)
     flash.add_argument("--output-dir", type=Path)
-    flash.add_argument("--cc", help="Clang executable for AP writer generation")
     flash.add_argument("--yes", action="store_true")
+    flash.add_argument("--force", action="store_true")
     return root
 
 
@@ -82,10 +82,6 @@ def main(argv=None):
             writing = args.action in ("install", "restore", "update-pilot", "cp-install", "cp-restore")
             if writing and not args.yes:
                 raise ValueError("flash writes require --yes")
-            if args.action in ("install", "restore", "update-pilot", "clean") and args.writer is None:
-                raise ValueError("this flash action requires --writer")
-            if args.action in ("install", "update-pilot") and args.pilot is None:
-                raise ValueError("this flash action requires --pilot")
             script = Path(__file__).resolve().parents[2] / "patch/on_camera.py"
             command = [sys.executable, str(script), "--" + args.action]
             for option, value in (("--map", args.map_path), ("--transport-root", args.transport_root), ("--state-dir", args.state_dir)):
@@ -94,11 +90,13 @@ def main(argv=None):
             for name in ("writer", "pilot"):
                 if getattr(args, name) is not None:
                     command.extend(["--" + name, str(getattr(args, name))])
-            for option, value in (("--output-dir", args.output_dir), ("--cc", args.cc)):
+            for option, value in (("--output-dir", args.output_dir),):
                 if value is not None:
                     command.extend([option, str(value)])
             if args.yes:
                 command.append("--yes")
+            if args.force:
+                command.append("--force")
             return subprocess.run(command, check=False).returncode
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
