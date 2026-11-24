@@ -103,6 +103,12 @@ class PatchTests(unittest.TestCase):
             self.assertEqual(cli_main(["flash", "prepare-ap", "--pilot", "pilot.so", "--output-dir", "plan"]), 0)
             self.assertEqual(run.call_args.args[0][2:], ["--prepare-ap", "--pilot", "pilot.so", "--output-dir", "plan"])
 
+    def test_flash_install_forwards_force(self):
+        with mock.patch("pilot_tool.cli.subprocess.run") as run:
+            run.return_value.returncode = 0
+            self.assertEqual(cli_main(["flash", "install", "--yes", "--force"]), 0)
+            self.assertEqual(run.call_args.args[0][2:], ["--install", "--yes", "--force"])
+
 
 if __name__ == "__main__":
     unittest.main()

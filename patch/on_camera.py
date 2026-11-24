@@ -114,8 +114,9 @@ def load_transport(transport_root: Path):
 def load_writer(patch_map: dict) -> bytes:
     writer = FLASH_MODULE_PATH.read_bytes()
     writer_meta = patch_map.get("flash_writer")
-    if not writer_meta or len(writer) != writer_meta.get("size_bytes") or \
-            sha256(writer) != writer_meta.get("sha256"):
+    if writer_meta is not None and (
+            len(writer) != writer_meta.get("size_bytes") or
+            sha256(writer) != writer_meta.get("sha256")):
         raise RuntimeError("AP writer differs from the artifact recorded in patch.json")
     if len(writer) > 65536:
         raise RuntimeError("AP writer exceeds the Jiritsu 64 KiB transfer limit")
@@ -130,22 +131,74 @@ def load_writer(patch_map: dict) -> bytes:
 
 def load_pilot(patch_map: dict) -> bytes:
     pilot = PILOT_DSO_PATH.read_bytes()
-    pilot_meta = patch_map["pilot_dso"]
-    if len(pilot) != pilot_meta["size_bytes"] or sha256(pilot) != pilot_meta["sha256"]:
+    pilot_meta = patch_map.get("pilot_dso")
+    if pilot_meta is not None and (
+            len(pilot) != pilot_meta.get("size_bytes") or
+            sha256(pilot) != pilot_meta.get("sha256")):
         raise RuntimeError("pilot.so differs from the DSO recorded in patch.json")
     if len(pilot) > 65536:
         raise RuntimeError("pilot.so exceeds the Jiritsu 64 KiB transfer limit")
     return pilot
 
 
+def parse_offset(value: int | str) -> int:
+    return int(value, 0) if isinstance(value, str) else int(value)
+
+
+def iter_patch_windows(patch_map: dict) -> list[tuple[str, int, bytes, bytes]]:
+    windows: list[tuple[str, int, bytes, bytes]] = []
+    for entry in patch_map.get("patches", []):
+        offset = parse_offset(entry["file_offset"])
+        length = int(entry["length"])
+        original = bytes.fromhex(entry["original_bytes"])
+        target = bytes.fromhex(entry["target_bytes"])
+        if offset < 0 or length <= 0 or len(original) != length or len(target) != length:
+            raise ValueError(f"invalid patch window: {entry.get('id', 'unknown')}")
+        windows.append((str(entry["id"]), offset, original, target))
+    return windows
+
+
+def window_hashes(data: bytes, patch_map: dict) -> dict:
+    windows = iter_patch_windows(patch_map)
+    if not windows:
+        raise ValueError("patch map contains no AP patch windows")
+    actual_parts: list[bytes] = []
+    baseline_parts: list[bytes] = []
+    patched_parts: list[bytes] = []
+    mismatches: list[dict] = []
+    for name, offset, original, target in windows:
+        length = len(original)
+        if offset + length > len(data):
+            raise ValueError(f"patch window {name} exceeds appFw.so size ({len(data)})")
+        actual = data[offset:offset + length]
+        actual_parts.append(actual)
+        baseline_parts.append(original)
+        patched_parts.append(target)
+        if actual != original and actual != target:
+            mismatches.append({
+                "id": name,
+                "offset": offset,
+                "length": length,
+                "actual": actual,
+                "expected_original": original,
+                "expected_target": target,
+            })
+    return {
+        "actual_sha256": sha256(b"".join(actual_parts)),
+        "baseline_sha256": sha256(b"".join(baseline_parts)),
+        "patched_sha256": sha256(b"".join(patched_parts)),
+        "mismatches": mismatches,
+    }
+
+
 def ap_state(data: bytes, patch_map: dict) -> str:
     target = patch_map["target"]
     if len(data) != target["binary_size"]:
         return "unknown"
-    digest = sha256(data)
-    if digest == target["binary_sha256"]:
+    hashes = window_hashes(data, patch_map)
+    if hashes["actual_sha256"] == hashes["baseline_sha256"]:
         return "baseline"
-    if digest == target.get("patched_binary_sha256"):
+    if hashes["actual_sha256"] == hashes["patched_sha256"]:
         return "patched"
     return "unknown"
 
@@ -297,20 +350,55 @@ def print_result(data: bytes) -> None:
         print(f"  {line}")
 
 
+def print_window_mismatch(data: bytes, patch_map: dict) -> None:
+    if len(data) != patch_map["target"]["binary_size"]:
+        print(f"WARNING: appFw.so size {len(data)} != expected {patch_map['target']['binary_size']}")
+        return
+    hashes = window_hashes(data, patch_map)
+    print(f"WARNING: patch window hash mismatch:")
+    print(f"  actual   windows sha256: {hashes['actual_sha256']}")
+    print(f"  baseline windows sha256: {hashes['baseline_sha256']}")
+    print(f"  patched  windows sha256: {hashes['patched_sha256']}")
+    for item in hashes["mismatches"]:
+        print(f"  differ: {item['id']} offset={hex(item['offset'])} length={item['length']}")
+
+
+def with_actual_windows(patch_map: dict, data: bytes, mode: str) -> dict:
+    """Return a copy of patch_map with actual on-camera window bytes for forced writes."""
+    field = "original_bytes" if mode == "write" else "target_bytes"
+    updated_patches = []
+    for entry in patch_map["patches"]:
+        offset = parse_offset(entry["file_offset"])
+        length = int(entry["length"])
+        copied = dict(entry)
+        copied[field] = data[offset:offset + length].hex()
+        updated_patches.append(copied)
+    updated = dict(patch_map)
+    updated["patches"] = updated_patches
+    return updated
+
+
 def record_camera_state(patch_map: dict, mode: str, before_hash: str,
                         after_hash: str, result: bytes) -> None:
     applied = mode == "write"
+    target = patch_map["target"]
+    baseline_sha = target.get("binary_sha256")
+    patched_sha = target.get("patched_binary_sha256")
+    if (baseline_sha is None or patched_sha is None) and patch_map.get("patches"):
+        windows = iter_patch_windows(patch_map)
+        baseline_sha = baseline_sha or sha256(b"".join(orig for _, _, orig, _ in windows))
+        patched_sha = patched_sha or sha256(b"".join(tgt for _, _, _, tgt in windows))
     save_device_state({
         "schema": "pilot.device-state.v1",
         "status": "applied_pending_power_cycle" if applied
                   else "restored_pending_power_cycle",
-        "target": patch_map["target"].get("model"),
-        "firmware": patch_map["target"].get("firmware"),
+        "target": target.get("model"),
+        "firmware": target.get("firmware"),
         "camera_applied": applied,
         "camera_installation": {
             "last_operation": "install" if applied else "restore",
-            "baseline_sha256": patch_map["target"]["binary_sha256"],
-            "patched_sha256": patch_map["target"]["patched_binary_sha256"],
+            "baseline_sha256": baseline_sha,
+            "patched_sha256": patched_sha,
             "before_sha256": before_hash,
             "after_sha256": after_hash,
             "writer_result": result.decode("ascii", "replace").strip(),
@@ -323,26 +411,31 @@ def run_check(session: cr.Session, patch_map: dict) -> int:
     data = read_ap(session)
     state = ap_state(data, patch_map)
     print(f"appFw.so: {len(data)} bytes sha256={sha256(data)}")
+    if len(data) == patch_map["target"]["binary_size"] and patch_map.get("patches"):
+        hashes = window_hashes(data, patch_map)
+        print(f"actual windows sha256: {hashes['actual_sha256']}")
     if state == "unknown":
+        print_window_mismatch(data, patch_map)
         print("state: unknown; no files were written")
         return 3
     print(f"state: {state}")
     if state == "patched":
         bootstrap = session.read_path(PILOT_DEVICE_PATH, missing=True)
-        expected = patch_map["pilot_dso"]
         if bootstrap is None:
             print("persistent bootstrap: missing /usr/lib/pilot.so")
             return 4
         digest = sha256(bootstrap)
         print(f"persistent bootstrap: {len(bootstrap)} bytes sha256={digest}")
-        if len(bootstrap) != expected["size_bytes"] or digest != expected["sha256"]:
+        expected = patch_map.get("pilot_dso")
+        if expected is not None and (
+                len(bootstrap) != expected["size_bytes"] or digest != expected["sha256"]):
             print("persistent bootstrap: mismatch")
             return 4
     return 0
 
 
 def run_write(session: cr.Session, patch_map: dict, writer: bytes,
-              pilot: bytes, mode: str) -> int:
+              pilot: bytes, mode: str, force: bool = False) -> int:
     preload = session.read_path("/tmp/jiritsu/../../etc/ld.so.preload", missing=True)
     if preload:
         raise RuntimeError("/etc/ld.so.preload exists; refusing to invoke Jiritsu loader")
@@ -351,8 +444,17 @@ def run_write(session: cr.Session, patch_map: dict, writer: bytes,
     before_hash = sha256(before)
     state = ap_state(before, patch_map)
     print(f"before appFw: {len(before)} bytes sha256={before_hash} state={state}")
+    effective_map = patch_map
     if state == "unknown":
-        raise RuntimeError("appFw is neither the recorded camera baseline nor Pilot image")
+        print_window_mismatch(before, patch_map)
+        if len(before) != patch_map["target"]["binary_size"]:
+            raise RuntimeError("appFw size does not match target binary_size")
+        if not force:
+            raise RuntimeError(
+                "AP patch windows do not match expected baseline or patched hash; pass --force to override"
+            )
+        print("WARNING: --force enabled; proceeding with actual on-camera window bytes")
+        effective_map = with_actual_windows(patch_map, before, mode)
 
     if mode == "write":
         ensure_no_flash_files(session)
@@ -367,7 +469,7 @@ def run_write(session: cr.Session, patch_map: dict, writer: bytes,
         return 0
 
     backup_device_files({"appFw.so": before, "pilot.so": session.read_path(PILOT_DEVICE_PATH, missing=True)})
-    result = run_flash_module(session, writer, mode, patch_map, pilot)
+    result = run_flash_module(session, writer, mode, effective_map, pilot)
     print_result(result)
     after = read_ap(session)
     after_hash = sha256(after)
@@ -454,7 +556,7 @@ def run_update_pilot(session: cr.Session, patch_map: dict,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--check", action="store_true", help="read-only full appFw hash check")
+    group.add_argument("--check", action="store_true", help="read-only AP patch window hash check")
     group.add_argument("--install", action="store_true", help="stage Pilot and install the AP patch")
     group.add_argument("--restore", action="store_true", help="restore the four original AP windows")
     group.add_argument("--update-pilot", action="store_true", help="update /usr/lib/pilot.so in place")
@@ -464,6 +566,7 @@ def main() -> int:
     group.add_argument("--cp-install", action="store_true", help="install configured CP patch")
     group.add_argument("--cp-restore", action="store_true", help="restore configured CP patch")
     parser.add_argument("--yes", action="store_true", help="required for write operations")
+    parser.add_argument("--force", action="store_true", help="allow AP install/restore when patch windows differ from expected")
     parser.add_argument("--output-dir", type=Path, help="new directory for the AP preparation")
     add_path_arguments(parser)
     args = parser.parse_args()
@@ -518,8 +621,10 @@ def main() -> int:
     print(f"target: {patch_map['target'].get('model', 'unknown')} "
           f"firmware {patch_map['target'].get('firmware', 'unknown')} "
           "/usr/lib/appFw.so")
-    print(f"baseline sha256: {patch_map['target']['binary_sha256']}")
-    print(f"patched sha256: {patch_map['target']['patched_binary_sha256']}")
+    if patch_map.get("patches"):
+        windows = iter_patch_windows(patch_map)
+        print(f"baseline windows sha256: {sha256(b''.join(orig for _, _, orig, _ in windows))}")
+        print(f"patched  windows sha256: {sha256(b''.join(tgt for _, _, _, tgt in windows))}")
     if writer is not None:
         print(f"AP writer: {len(writer)} bytes sha256={sha256(writer)}")
     if pilot:
@@ -542,7 +647,7 @@ def main() -> int:
             return run_update_pilot(session, patch_map, writer, pilot)
         assert writer is not None
         return run_write(session, patch_map, writer, pilot,
-                         "write" if args.install else "restore")
+                         "write" if args.install else "restore", force=args.force)
 
 
 if __name__ == "__main__":

@@ -49,6 +49,7 @@ def parser():
     flash.add_argument("--pilot", type=Path)
     flash.add_argument("--output-dir", type=Path)
     flash.add_argument("--yes", action="store_true")
+    flash.add_argument("--force", action="store_true")
     return root
 
 
@@ -94,6 +95,8 @@ def main(argv=None):
                     command.extend([option, str(value)])
             if args.yes:
                 command.append("--yes")
+            if args.force:
+                command.append("--force")
             return subprocess.run(command, check=False).returncode
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
