@@ -7,6 +7,8 @@
 - **6K 420 (24-50p)**：在 XAVC HS 4K 24p/25p/30p/50p 档位输出 `5760×3240`
 - **1080p (6K OS)**：在 HD 24–60p 档位启用 `5952×3348` 全读出超采至 1080p
 
+![Video Mode 菜单](assets/videoMode_menu.png)
+
 ## 依赖
 
 - [Pilot v0.2.0](https://github.com/Himpq/Pilot/releases/tag/v0.2.0)（A6700）
