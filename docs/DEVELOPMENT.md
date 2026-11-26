@@ -45,6 +45,9 @@ PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.s
 
 ## CP 补丁
 
+> [!WARNING]
+> 请尽量维持原厂 CP 状态。刷写 CP 补丁前，请先确认相机**从未刷过与 Pilot 冲突的其他项目**，或**未验证 CP 补丁区是否冲突的第三方项目**（例如占用同一代码洞或修改过 `cpapp-b.bin` 的其他补丁）。
+
 根目录 `patch.a6700.json` 中的 `cp.patch` 保存 CP 补丁描述。相机刷写统一使用 `patch/on_camera.py`：
 
 ```sh
@@ -54,6 +57,6 @@ python tools/pilot.py flash cp-install --map patch.a6700.json --yes
 python tools/pilot.py flash cp-restore --map patch.a6700.json --yes
 ```
 
-写入前会备份 CP 文件，完成后检查完整文件并提示重启。当前支持补丁位置为原始状态时安装，以及匹配 v4 时还原；其他状态会显示为 `unknown`。
+写入前会备份 CP 文件，完成后检查完整文件并提示重启。`cp-install` 与 `cp-restore` 会在抽点前门控之后强制校验整份 `cpapp-b.bin` 的全量 SHA-256（仅当严格匹配原厂基线时才允许安装，严格匹配已安装基线时才允许还原）；其他状态会显示为 `unknown` 并拒绝写入。
 
 [返回首页](../README.md)
