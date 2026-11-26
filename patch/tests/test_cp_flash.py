@@ -62,6 +62,27 @@ class CpFlashTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(RuntimeError, "unknown"):
                 cp_flash.run(FakeSession(b"aZZdef"), spec, "install", Path(temp))
+            with self.assertRaisesRegex(RuntimeError, "unknown"):
+                cp_flash.run(FakeSession(b"aZZdef"), spec, "restore", Path(temp))
+
+    def test_force_restore_recovers_partial_unknown_windows(self):
+        spec = {"target": {"size_bytes": 8}, "patches": [
+            {"offset": 1, "before": "6263", "after": "7879"},
+            {"offset": 4, "before": "0000", "after": "aabb"}]}
+        session = FakeSession(b"abc" + b"d" + b"\x00\x99" + b"gh")
+        with tempfile.TemporaryDirectory() as temp:
+            cp_flash.run(session, spec, "restore", Path(temp), force=True)
+            self.assertEqual(session.files[cp_flash.CP_PATH], b"abcd\x00\x00gh")
+
+    def test_sample_digest_changes_on_window_or_anchor_change(self):
+        spec = {"target": {"size_bytes": 512}, "patches": [
+            {"offset": 100, "before": "0000", "after": "1111"}]}
+        base = b"\x22" * 100 + b"\x00\x00" + b"\x22" * 410
+        h_base = cp_flash.sample_digest(base, spec)
+        changed_unsampled = base[:80] + b"\x99" + base[81:]
+        changed_window = base[:100] + b"\x11\x11" + base[102:]
+        self.assertEqual(cp_flash.sample_digest(changed_unsampled, spec), h_base)
+        self.assertNotEqual(cp_flash.sample_digest(changed_window, spec), h_base)
 
 
 if __name__ == "__main__":

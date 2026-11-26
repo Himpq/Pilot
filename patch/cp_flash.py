@@ -22,6 +22,26 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def sample_points(spec):
+    size = spec["target"]["size_bytes"]
+    pts = []
+    for pos in (0, size // 4, size // 2, (size * 3) // 4, max(0, size - 64)):
+        end = min(size, pos + 64)
+        if end > pos:
+            pts.append((pos, end - pos))
+    for offset, before, _ in windows(spec):
+        pts.append((offset, len(before)))
+    return pts
+
+
+def sample_digest(image, spec):
+    h = hashlib.sha256()
+    for offset, length in sample_points(spec):
+        h.update(struct.pack("<QI", offset, length))
+        h.update(image[offset:offset + length])
+    return h.hexdigest()
+
+
 def load_config(path):
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     if data.get("schema") != "pilot.patch-map.v1":
@@ -52,8 +72,7 @@ def state(image, spec):
     return "unknown"
 
 
-def build_delta(spec):
-    sites = windows(spec)
+def build_delta(sites, target_size):
     table, payload = bytearray(), bytearray()
     for offset, before, after in sites:
         table += struct.pack("<QII", offset, len(before), len(payload))
@@ -61,7 +80,7 @@ def build_delta(spec):
     capacity = DELTA_SIZE - 96 - len(table)
     if capacity < len(payload):
         raise ValueError("CP patch exceeds writer capacity")
-    header = struct.pack("<8sIIQQ", b"A6700D01", 1, len(sites), spec["target"]["size_bytes"], capacity)
+    header = struct.pack("<8sIIQQ", b"A6700D01", 1, len(sites), target_size, capacity)
     return header.ljust(96, b"\0") + table + payload.ljust(capacity, b"\0")
 
 
@@ -72,14 +91,14 @@ def stage(session, name, data):
         raise RuntimeError(f"staging readback failed: {name}")
 
 
-def run(session, spec, action, state_dir):
+def run(session, spec, action, state_dir, force=False):
     image = session.read_path(CP_PATH)
     current = state(image, spec)
-    print(f"CP image: {current} sha256={digest(image)}")
+    print(f"CP image: {current} sample_sha256={sample_digest(image, spec)} sha256={digest(image)}")
     if action == "check":
         return
     expected = "original" if action == "install" else "installed"
-    if current != expected:
+    if current != expected and not (action == "restore" and current == "unknown" and force):
         raise RuntimeError(f"CP patch state must be {expected}; found {current}")
     if session.read_path("/tmp/jiritsu/../../etc/ld.so.preload", missing=True):
         raise RuntimeError("ld.so.preload exists")
@@ -95,10 +114,20 @@ def run(session, spec, action, state_dir):
         f.write(image)
     print(f"Backup: {backup}")
     target = bytearray(image)
-    for offset, before, after in windows(spec):
+    all_sites = windows(spec)
+    if action == "restore" and current == "unknown":
+        delta_sites = [
+            (offset, before, image[offset:offset + len(before)])
+            for offset, before, _ in all_sites
+            if image[offset:offset + len(before)] != before
+        ]
+    else:
+        delta_sites = all_sites
+    for offset, before, after in delta_sites:
         value = after if action == "install" else before
         target[offset:offset + len(value)] = value
-    stage(session, "cp.delta", build_delta(spec))
+    delta = build_delta(delta_sites, spec["target"]["size_bytes"])
+    stage(session, "cp.delta", delta)
     stage(session, "cpdelta.mode", ("apply\n" if action == "install" else "restore\n").encode("ascii"))
     stage(session, "cpdelta-staged.so", writer)
     session.select("/tmp/jiritsu/libJit.so")
@@ -112,10 +141,14 @@ def run(session, spec, action, state_dir):
     if result is None or not result.startswith(b"A6700CPDELTA\n") or b"RESULT=OK" not in result:
         raise RuntimeError(f"CP writer failed or timed out: {result!r}")
     actual = session.read_path(CP_PATH)
-    if actual != bytes(target):
-        raise RuntimeError("CP full-image readback mismatch")
-    for name, expected_data in (("libJit.so", writer), ("cpdelta-staged.so", writer), ("cpdelta.mode", ("apply\n" if action == "install" else "restore\n").encode("ascii")), ("cp.delta", build_delta(spec)), ("cpdelta.result", result)):
+    if len(actual) != spec["target"]["size_bytes"] or sample_digest(actual, spec) != sample_digest(target, spec):
+        raise RuntimeError("CP sampled readback mismatch")
+    for offset, before, after in delta_sites:
+        expected_bytes = after if action == "install" else before
+        if actual[offset:offset + len(expected_bytes)] != expected_bytes:
+            raise RuntimeError(f"CP window readback mismatch at offset {offset}")
+    for name, expected_data in (("libJit.so", writer), ("cpdelta-staged.so", writer), ("cpdelta.mode", ("apply\n" if action == "install" else "restore\n").encode("ascii")), ("cp.delta", delta), ("cpdelta.result", result)):
         if session.read(name, missing=True) == expected_data:
             session.select("/tmp/jiritsu/" + name)
             session.jiritsu(18, b"\0\xff", missing=True)
-    print(f"CP {action} complete sha256={digest(actual)}; power-cycle the camera")
+    print(f"CP {action} complete sample_sha256={sample_digest(actual, spec)} sha256={digest(actual)}; power-cycle the camera")

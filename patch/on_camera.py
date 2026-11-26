@@ -648,7 +648,7 @@ def main() -> int:
         cr = load_transport(paths.transport_root)
         action = "install" if args.cp_install else "restore" if args.cp_restore else "check"
         with cr.Session(skip_hasp=True) as session:
-            cp_flash.run(session, spec, action, STATE_DIR / "cp-backups")
+            cp_flash.run(session, spec, action, STATE_DIR / "cp-backups", force=args.force)
         return 0
     patch_map = load_map()
     writer = None if args.check else load_writer(patch_map)
