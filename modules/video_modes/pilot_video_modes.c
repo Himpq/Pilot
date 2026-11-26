@@ -176,6 +176,26 @@ static void show_toast(const char *msg, u32 ms) {
         pm_toast_show("vmod", 0, 36, 480, 32, msg, ms);
 }
 
+/* Wait for appFw boot / wake init to settle BEFORE touching live CP DMA so the
+ * screen never sits in a mismatched DMA-vs-ISP debayer state while waiting. */
+static void wait_appfw_settle(const PilotApi *api, u32 settle_ms) {
+    u64 appfw = pm_find_so_base("appFw.so");
+    if (appfw) {
+        typedef void *(*get_seq_mgr_fn)(void);
+        typedef int   (*is_running_fn)(void *mgr, u32 seq_id);
+        get_seq_mgr_fn get_mgr = (get_seq_mgr_fn)(uintptr_t)(appfw + APPFW_GET_SEQ_MGR_OFF);
+        is_running_fn  is_run  = (is_running_fn)(uintptr_t)(appfw + APPFW_SEQ_IS_RUNNING_OFF);
+        void *mgr = get_mgr();
+        if (mgr) {
+            for (u32 w = 0; w < 60u && is_run(mgr, APPFW_SEQ_ID_MOVIE_FMT); ++w)
+                usleep(50000);
+        }
+    }
+    if (settle_ms > 0u)
+        usleep((useconds_t)(settle_ms * 1000u));
+    (void)api;
+}
+
 /* --- Native appFw pipeline reload (0xCA + 0x32F) --- */
 static void reload_movie_pipeline(const PilotApi *api, int is_boot) {
     u64 appfw = pm_find_so_base("appFw.so");
@@ -200,33 +220,38 @@ static void reload_movie_pipeline(const PilotApi *api, int is_boot) {
         return;
     }
 
-    /* At boot, wait for appFw's initial LiveView & VDF setup (~t=9s) to settle
-     * before triggering 0xCA + 0x32F so the bottom 1/5 bar never stays black. */
-    if (is_boot) {
-        for (u32 w = 0; w < 40u && is_run(mgr, APPFW_SEQ_ID_MOVIE_FMT); ++w)
+    /* Fire 0xCA immediately after live CP DMA patch (0ms gap -> no debayer glitch).
+     * On boot/wake, if appFw was still busy and dropped 0xCA (ca_ms < 100ms),
+     * retry once after 400ms so VDF surface always rebuilds cleanly (no bottom 1/4 block). */
+    long ca_ms = 0;
+    int tries = 0;
+    int max_tries = is_boot ? 2 : 1;
+    for (tries = 1; tries <= max_tries; ++tries) {
+        struct timespec c0, c1;
+        clock_gettime(CLOCK_MONOTONIC, &c0);
+        start_s(mgr, APPFW_SEQ_ID_MOVIE_FMT, 0);
+        usleep(50000);
+        for (u32 w = 0; w < 50u && is_run(mgr, APPFW_SEQ_ID_MOVIE_FMT); ++w)
             usleep(50000);
-        usleep(1800000);
+        clock_gettime(CLOCK_MONOTONIC, &c1);
+        ca_ms = (c1.tv_sec - c0.tv_sec) * 1000L + (c1.tv_nsec - c0.tv_nsec) / 1000000L;
+        if (ca_ms >= 100L || tries >= max_tries)
+            break;
+        usleep(400000);
     }
 
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-
-    start_s(mgr, APPFW_SEQ_ID_MOVIE_FMT, 0);
-    usleep(50000);
-    for (u32 w = 0; w < 50u && is_run(mgr, APPFW_SEQ_ID_MOVIE_FMT); ++w)
-        usleep(50000);
-
+    struct timespec d0, d1;
+    clock_gettime(CLOCK_MONOTONIC, &d0);
     start_d(mgr, APPFW_SEQ_ID_DISP_UPDATE, 0, 1u);
     usleep(50000);
     for (u32 w = 0; w < 30u && is_run(mgr, APPFW_SEQ_ID_DISP_UPDATE); ++w)
         usleep(50000);
+    clock_gettime(CLOCK_MONOTONIC, &d1);
+    long disp_ms = (d1.tv_sec - d0.tv_sec) * 1000L + (d1.tv_nsec - d0.tv_nsec) / 1000000L;
 
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    long ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
-
-    char line[128];
-    snprintf(line, sizeof(line), "VMOD_RELOAD seq=0xca+0x32f boot=%d ms=%ld run=%d/%d",
-             is_boot, ms,
+    char line[160];
+    snprintf(line, sizeof(line), "VMOD_RELOAD seq=0xca+0x32f boot=%d tries=%d ca_ms=%ld disp_ms=%ld run=%d/%d",
+             is_boot, tries, ca_ms, disp_ms,
              is_run(mgr, APPFW_SEQ_ID_MOVIE_FMT) ? 1 : 0,
              is_run(mgr, APPFW_SEQ_ID_DISP_UPDATE) ? 1 : 0);
     pm_emit_log(api, line);
@@ -241,12 +266,74 @@ static const char *apply_og2k_ap(int enable) {
     static const u64 offs[4] = {0x27e5acULL, 0x27e5dcULL, 0x27e624ULL, 0x27e684ULL};
     static const u8 stock[4] = {0x80, 0x07, 0x38, 0x04};
     static const u8 patch[4] = {0x80, 0x07, 0x00, 0x05};
-    return pm_ap_patch_ro_multi(base, offs, 4u,
-                                enable ? stock : patch,
-                                enable ? patch : stock, 4u);
+    const char *rc = pm_ap_patch_ro_multi(base, offs, 4u,
+                                          enable ? stock : patch,
+                                          enable ? patch : stock, 4u);
+    if (strcmp(rc, "APPLY_OK") != 0 && strcmp(rc, "ALREADY_PATCHED") != 0)
+        return rc;
+
+    /* Playback CompareResolution (0x15e4f4): 1920-wide height eq -> hs (>=1080) */
+    static const u8 cmp_stock[4] = {0xe0, 0x17, 0x9f, 0x1a};
+    static const u8 cmp_patch[4] = {0xe0, 0x37, 0x9f, 0x1a};
+    const u8 *exp = enable ? cmp_stock : cmp_patch;
+    const u8 *rep = enable ? cmp_patch : cmp_stock;
+    u8 *dst = (u8 *)(uintptr_t)(base + 0x15e4f4ULL);
+    if (memcmp(dst, rep, 4u) != 0) {
+        if (memcmp(dst, exp, 4u) != 0) return "MPR_PB_MISMATCH";
+        u64 page = (base + 0x15e4f4ULL) & ~(PM_PAGE_SIZE - 1ULL);
+        if (mprotect((void *)(uintptr_t)page, (size_t)PM_PAGE_SIZE,
+                     PROT_READ | PROT_WRITE | PROT_EXEC) != 0)
+            return "MPR_PB_MPROTECT_FAIL";
+        memcpy(dst, rep, 4u);
+        __builtin___clear_cache((char *)dst, (char *)(dst + 4u));
+        (void)mprotect((void *)(uintptr_t)page, (size_t)PM_PAGE_SIZE,
+                       PROT_READ | PROT_EXEC);
+        if (memcmp(dst, rep, 4u) != 0) return "MPR_PB_VERIFY_FAIL";
+    }
+    return rc;
 }
 
-static const char *apply_og2k_avcam(int enable) {
+static int patch_avcam_phys_idempotent(const PilotApi *api, int fd, u64 off,
+                                       const u8 *exp, const u8 *rep, size_t len) {
+    u64 phys = AVCAM_BASE_PHYS + off;
+    u8 cur[32], rb[32];
+    memset(cur, 0, sizeof(cur));
+    if (len == 0u || len > sizeof(cur)) return 0;
+    if (pread(fd, cur, len, (off_t)phys) != (ssize_t)len) {
+        if (api) {
+            char line[96];
+            snprintf(line, sizeof(line), "VMOD_PB_ERR off=0x%llx stage=pread_fail", (unsigned long long)off);
+            pm_emit_log(api, line);
+        }
+        return 0;
+    }
+    if (memcmp(cur, rep, len) == 0) return 1;
+    if (memcmp(cur, exp, len) != 0) {
+        if (api) {
+            char line[128];
+            snprintf(line, sizeof(line),
+                     "VMOD_PB_ERR off=0x%llx stage=mismatch cur=%02x%02x%02x%02x exp=%02x%02x%02x%02x",
+                     (unsigned long long)off,
+                     cur[0], cur[1], cur[2], cur[3],
+                     exp[0], exp[1], exp[2], exp[3]);
+            pm_emit_log(api, line);
+        }
+        return 0;
+    }
+    u64 page = phys & ~0xFFFULL;
+    u64 p_off = phys - page;
+    size_t map_len = (p_off + len > 0x1000ULL) ? 0x2000u : 0x1000u;
+    void *m = mmap(0, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)page);
+    if (m == MAP_FAILED) return 0;
+    u8 *dst = (u8 *)m + p_off;
+    memcpy(dst, rep, len);
+    pm_dcache_clean_inval(dst, len);
+    munmap(m, map_len);
+    if (pread(fd, rb, len, (off_t)phys) != (ssize_t)len) return 0;
+    return memcmp(rb, rep, len) == 0;
+}
+
+static const char *apply_og2k_avcam(const PilotApi *api, int enable) {
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (fd < 0) return "DEVMEM_OPEN_FAIL";
 
@@ -282,6 +369,12 @@ static const char *apply_og2k_avcam(int enable) {
                 pm_wr_u16(r, 0x06u, to_h);
                 pm_wr_u32(r, 0x38u, (u32)to_h);
                 pm_wr_u16(r, 0x90u, to_h);
+                {
+                    u16 from_mb_half = enable ? 0x0210u : 0x0280u;
+                    u16 to_mb_half   = enable ? 0x0280u : 0x0210u;
+                    if (pm_rd_u16(r, 0x56u) == from_mb_half)
+                        pm_wr_u16(r, 0x56u, to_mb_half);
+                }
                 if (enable) {
                     if (r[0xA7u] < 52u) r[0xA7u] = 52u;
                 } else if (g_avc_lvl_saved) {
@@ -307,8 +400,39 @@ static const char *apply_og2k_avcam(int enable) {
 
     pm_dcache_clean_inval(base, map_len);
     munmap(m, map_len);
+
+    /* Playback fixes for 1920x1280: pbformat (0x115de8), pbaspect (0x23e510), avdec HD (0xc00378) */
+    static const u8 pbf_stock[4] = {0xe1, 0x00, 0x00, 0x54};
+    static const u8 pbf_patch[4] = {0xe3, 0x00, 0x00, 0x54};
+    static const u8 pba_stock[28] = {
+        0xbf, 0xe2, 0x10, 0x71, 0xe0, 0x02, 0x00, 0x54,
+        0xbf, 0xc2, 0x21, 0x71, 0xe0, 0x03, 0x00, 0x54,
+        0x08, 0x1c, 0x82, 0x52, 0xbf, 0x02, 0x08, 0x6b,
+        0x01, 0x06, 0x00, 0x54
+    };
+    static const u8 pba_patch[28] = {
+        0xbf, 0xc2, 0x21, 0x71, 0x20, 0x04, 0x00, 0x54,
+        0x08, 0x1c, 0x82, 0x52, 0xbf, 0x02, 0x08, 0x6b,
+        0x60, 0x00, 0x00, 0x54, 0xbf, 0xe2, 0x10, 0x71,
+        0x42, 0x02, 0x00, 0x54
+    };
+    static const u8 dec_stock[4] = {0x80, 0x07, 0x40, 0x04};
+    static const u8 dec_patch[4] = {0x80, 0x07, 0x00, 0x05};
+
+    int pb_ok = 1;
+    pb_ok &= patch_avcam_phys_idempotent(api, fd, 0x115de8ULL,
+                                         enable ? pbf_stock : pbf_patch,
+                                         enable ? pbf_patch : pbf_stock, 4u);
+    pb_ok &= patch_avcam_phys_idempotent(api, fd, 0x23e510ULL,
+                                         enable ? pba_stock : pba_patch,
+                                         enable ? pba_patch : pba_stock, 28u);
+    pb_ok &= patch_avcam_phys_idempotent(api, fd, 0xc00378ULL,
+                                         enable ? dec_stock : dec_patch,
+                                         enable ? dec_patch : dec_stock, 4u);
+
     close(fd);
     if (cc_count < 100u || avc_count < 100u) return "ROW_COUNT_LOW";
+    if (!pb_ok) return "PB_PATCH_FAIL";
     return "APPLY_OK";
 }
 
@@ -321,9 +445,21 @@ static const char *apply_cp_dma_table(const PilotApi *api,
         const u8 *exp = enable ? tbl[i].stock : tbl[i].patch;
         const u8 *rep = enable ? tbl[i].patch : tbl[i].stock;
 
-        if (api->cp_mem->read(tbl[i].va, cur, ln) != PILOT_STATUS_OK) return "CP_DMA_RD_FAIL";
+        if (api->cp_mem->read(tbl[i].va, cur, ln) != PILOT_STATUS_OK) {
+            char err[96];
+            snprintf(err, sizeof(err), "VMOD_DMA_ERR idx=%u va=0x%08x step=rd", (unsigned)i, tbl[i].va);
+            pm_emit_log(api, err);
+            return "CP_DMA_RD_FAIL";
+        }
         if (memcmp(cur, rep, ln) == 0) { (*skipped)++; continue; }
-        if (memcmp(cur, exp, ln) != 0) return "CP_DMA_MISMATCH";
+        if (memcmp(cur, exp, ln) != 0) {
+            char err[128];
+            snprintf(err, sizeof(err), "VMOD_DMA_ERR idx=%u va=0x%08x step=cmp cur=%02x%02x%02x%02x",
+                     (unsigned)i, tbl[i].va, cur[0], ln > 1u ? cur[1] : 0u,
+                     ln > 2u ? cur[2] : 0u, ln > 3u ? cur[3] : 0u);
+            pm_emit_log(api, err);
+            return "CP_DMA_MISMATCH";
+        }
         if (api->cp_mem->write(tbl[i].va, rep, ln) != PILOT_STATUS_OK) return "CP_DMA_WR_FAIL";
         if (api->cp_mem->read(tbl[i].va, rb, ln) != PILOT_STATUS_OK || memcmp(rb, rep, ln) != 0)
             return "CP_DMA_RB_FAIL";
@@ -339,9 +475,19 @@ static const char *apply_cp_uipc_table(const PilotApi *api,
         size_t i = enable ? k : (n_uipc - 1u - k);
         const u8 *exp = enable ? tbl[i].stock : tbl[i].patch;
         const u8 *rep = enable ? tbl[i].patch : tbl[i].stock;
-        if (pm_cp_patch_idempotent(api, tbl[i].va, exp, rep, tbl[i].len,
-                                   applied, skipped) != PILOT_STATUS_OK)
+        PilotStatus rc = pm_cp_patch_idempotent(api, tbl[i].va, exp, rep, tbl[i].len,
+                                                applied, skipped);
+        if (rc != PILOT_STATUS_OK) {
+            u8 cur[4] = {0};
+            (void)api->cp_mem->read(tbl[i].va, cur, tbl[i].len < 4u ? tbl[i].len : 4u);
+            char err[128];
+            snprintf(err, sizeof(err),
+                     "VMOD_UIPC_ERR idx=%u va=0x%08x len=%u en=%d rc=%d cur=%02x%02x%02x%02x",
+                     (unsigned)i, tbl[i].va, (unsigned)tbl[i].len, enable, (int)rc,
+                     cur[0], cur[1], cur[2], cur[3]);
+            pm_emit_log(api, err);
             return "CP_UIPC_FAIL";
+        }
     }
     return "APPLY_OK";
 }
@@ -361,12 +507,14 @@ static const char *apply_og2k_cp_uipc(const PilotApi *api, int enable, u32 *appl
  * ========================================================================= */
 static int run_1080os(const PilotApi *api, int enable) {
     u32 w = 0, sk = 0;
-    const char *d = apply_cp_dma_table(api, CP_1080OS_DMA,
-                                       sizeof(CP_1080OS_DMA) / sizeof(CP_1080OS_DMA[0]),
-                                       enable, &w, &sk);
+    /* Patch cold UIPC tables FIRST, live DRVREC_idx10 DMA LAST (right before 0xCA)
+     * to eliminate mid-stream debayer glitches. */
     const char *u = apply_cp_uipc_table(api, CP_1080OS_UIPC,
                                         sizeof(CP_1080OS_UIPC) / sizeof(CP_1080OS_UIPC[0]),
                                         enable, &w, &sk);
+    const char *d = apply_cp_dma_table(api, CP_1080OS_DMA,
+                                       sizeof(CP_1080OS_DMA) / sizeof(CP_1080OS_DMA[0]),
+                                       enable, &w, &sk);
     char line[192];
     snprintf(line, sizeof(line), "VMOD_1080OS en=%d dma=%s uipc=%s w=%u sk=%u",
              enable, d, u, w, sk);
@@ -394,14 +542,16 @@ static const char *apply_og2k_cp_idx5(const PilotApi *api, int enable, u32 *appl
 static int run_og2k(const PilotApi *api, int enable) {
     u32 w = 0, sk = 0;
     const char *ap = apply_og2k_ap(enable);
-    const char *av = apply_og2k_avcam(enable);
+    const char *av = apply_og2k_avcam(api, enable);
     const char *cp = "APPLY_OK";
     if (!api || !api->cp_mem || !api->cp_mem->read || !api->cp_mem->write || !api->cp_mem->patch) {
         cp = "CP_API_MISSING";
     } else if (enable) {
-        cp = apply_og2k_cp_dma(api, 1, &w, &sk);
-        if (strcmp(cp, "APPLY_OK") == 0) cp = apply_og2k_cp_uipc(api, 1, &w, &sk);
+        /* Patch cold UIPC tables & idx5 FIRST, live DRVREC_idx10 DMA LAST right before 0xCA
+         * so LiveView never runs with mismatched DMA readout vs ISP demosaic geometry. */
+        cp = apply_og2k_cp_uipc(api, 1, &w, &sk);
         if (strcmp(cp, "APPLY_OK") == 0) cp = apply_og2k_cp_idx5(api, 1, &w, &sk);
+        if (strcmp(cp, "APPLY_OK") == 0) cp = apply_og2k_cp_dma(api, 1, &w, &sk);
     } else {
         cp = apply_og2k_cp_idx5(api, 0, &w, &sk);
         if (strcmp(cp, "APPLY_OK") == 0) cp = apply_og2k_cp_uipc(api, 0, &w, &sk);
@@ -737,6 +887,51 @@ static PilotUiOption g_vmode_options[] = {
     },
 };
 
+/* Check whether CP RAM was wiped back to stock (e.g., after soft power-off/on
+ * STR wake or Auto Power Off standby wake where AP stays alive while CP reboots).
+ * Returns 1 ONLY when CP DMA read succeeds AND bytes explicitly match stock. */
+static int check_cp_reset_to_stock(const PilotApi *api, int mode) {
+    if (!api || !api->cp_mem || !api->cp_mem->read || mode == VMODE_STOCK)
+        return 0;
+
+    if (mode == VMODE_OG2K) {
+        u8 b_dma[4] = {0}, b_uipc[4] = {0};
+        const struct cp_2k_patch *p_dma  = &CP_2K_DMA[1];  /* DRVREC_idx10_0x054 (2B) */
+        const struct cp_2k_patch *p_uipc = &CP_2K_UIPC[0]; /* DIST_ASP_0x4C9684  (1B) */
+        if (api->cp_mem->read(p_dma->va, b_dma, p_dma->len) == PILOT_STATUS_OK &&
+            memcmp(b_dma, p_dma->stock, p_dma->len) == 0)
+            return 1;
+        if (api->cp_mem->read(p_uipc->va, b_uipc, p_uipc->len) == PILOT_STATUS_OK &&
+            memcmp(b_uipc, p_uipc->stock, p_uipc->len) == 0)
+            return 1;
+        return 0;
+    }
+
+    if (mode == VMODE_1080OS) {
+        u8 b_dma[4] = {0}, b_uipc[4] = {0};
+        const struct cp_2k_patch *p_dma  = &CP_1080OS_DMA[0];
+        const struct cp_2k_patch *p_uipc = &CP_1080OS_UIPC[0];
+        if (api->cp_mem->read(p_dma->va, b_dma, p_dma->len) == PILOT_STATUS_OK &&
+            memcmp(b_dma, p_dma->stock, p_dma->len) == 0)
+            return 1;
+        if (api->cp_mem->read(p_uipc->va, b_uipc, p_uipc->len) == PILOT_STATUS_OK &&
+            memcmp(b_uipc, p_uipc->stock, p_uipc->len) == 0)
+            return 1;
+        return 0;
+    }
+
+    if (mode == VMODE_6K) {
+        static const u8 idx3_4k[4] = {0x00, 0x0F, 0x70, 0x08};
+        u8 cur[4] = {0};
+        if (api->cp_mem->read(CP_IDX3_VA, cur, 4u) == PILOT_STATUS_OK &&
+            memcmp(cur, idx3_4k, 4u) == 0)
+            return 1;
+        return 0;
+    }
+
+    return 0;
+}
+
 /* --- Single Background Worker --- */
 static void *vmode_worker(void *unused) {
     (void)unused;
@@ -759,6 +954,7 @@ static void *vmode_worker(void *unused) {
     pthread_mutex_unlock(&g_state_lock);
 
     if (init_mode != VMODE_STOCK) {
+        wait_appfw_settle(api, 0u);
         (void)switch_mode(api, VMODE_STOCK, init_mode, 1);
         pthread_mutex_lock(&g_state_lock);
         g_applied_mode = init_mode;
@@ -769,11 +965,57 @@ static void *vmode_worker(void *unused) {
 
     for (;;) {
         pthread_mutex_lock(&g_state_lock);
-        while (g_desired_mode == g_applied_mode)
-            pthread_cond_wait(&g_state_cond, &g_state_lock);
+        int do_wake_reapply = 0;
+        while (g_desired_mode == g_applied_mode) {
+            if (g_applied_mode == VMODE_STOCK) {
+                pthread_cond_wait(&g_state_cond, &g_state_lock);
+            } else {
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                ts.tv_nsec += 250000000L; /* 250ms wake watchdog */
+                if (ts.tv_nsec >= 1000000000L) {
+                    ts.tv_sec += 1;
+                    ts.tv_nsec -= 1000000000L;
+                }
+                (void)pthread_cond_timedwait(&g_state_cond, &g_state_lock, &ts);
+                if (g_desired_mode == g_applied_mode) {
+                    int active = g_applied_mode;
+                    pthread_mutex_unlock(&g_state_lock);
+                    if (check_cp_reset_to_stock(api, active)) {
+                        usleep(50000);
+                        if (check_cp_reset_to_stock(api, active)) {
+                            do_wake_reapply = 1;
+                            pthread_mutex_lock(&g_state_lock);
+                            break;
+                        }
+                    }
+                    pthread_mutex_lock(&g_state_lock);
+                }
+            }
+        }
         int cur    = g_applied_mode;
         int target = g_desired_mode;
         pthread_mutex_unlock(&g_state_lock);
+
+        if (do_wake_reapply && target == cur && cur != VMODE_STOCK) {
+            (void)pm_cp_wait_nonzero_u16(api, CP_IDX3_VA, 16u, 50u, 50u);
+            wait_appfw_settle(api, 0u);
+            int ok = 0;
+            if (cur == VMODE_OG2K)
+                ok = run_og2k(api, 1);
+            else if (cur == VMODE_6K)
+                ok = run_6k(api, 1);
+            else if (cur == VMODE_1080OS)
+                ok = run_1080os(api, 1);
+            if (ok) {
+                update_format_labels(cur);
+                reload_movie_pipeline(api, 1);
+            }
+            snprintf(line, sizeof(line), "VMOD_WAKE_REAPPLY mode=%s ok=%d",
+                     kModeNames[cur], ok);
+            pm_emit_log(api, line);
+            continue;
+        }
 
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -809,6 +1051,23 @@ PilotStatus pilot_module_init(const PilotApi *api) {
     g_vmode_options[0].value = saved;
     save_config_mode(api, saved);
     update_format_labels(saved);
+
+    /* Apply AP libmpr.so (+ AVCAM) geometry IMMEDIATELY at module init — BEFORE
+     * appFw finishes building the initial boot LiveView display layout — matching
+     * the warm-wake state where libmpr.so is already 1920x1280 and 0xCA+0x32F
+     * enters full 3:2 cleanly without a bottom 1/4 solid color bar. */
+    if (saved == VMODE_OG2K) {
+        const char *eap = apply_og2k_ap(1);
+        const char *eav = apply_og2k_avcam(api, 1);
+        char emsg[96];
+        snprintf(emsg, sizeof(emsg), "VMOD_EARLY_INIT mode=1 ap=%s av=%s", eap, eav);
+        pm_emit_log(api, emsg);
+    } else if (saved == VMODE_6K) {
+        const char *eap = apply_6k_ap(1);
+        char emsg[96];
+        snprintf(emsg, sizeof(emsg), "VMOD_EARLY_INIT mode=2 ap=%s", eap);
+        pm_emit_log(api, emsg);
+    }
 
     PilotStatus ust = pilot_ui_register_options(
         MODULE_SO_NAME,
