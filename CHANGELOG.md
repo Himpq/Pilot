@@ -1,5 +1,11 @@
 # 更新记录
 
+## v0.2.1（2026-11-26）
+
+- 修复原厂未清过 WBI 快照的 A6700 刷入 AP 补丁后冷重启被旧 WBI Page Cache 遮蔽的问题（[#10](https://github.com/Himpq/Pilot/issues/10)）。
+- `flash install` 写入并校验 `appFw.so` 后，自动将 `/dev/nflasha5` 头 512 字节 `WBI2` 快照头双份备份（机内 `/usr/lib/pilot_wbi_hdr.bak` + 电脑端 `<state-dir>/wbi_hdr.bak`）并清零，保证冷启动直接加载最新补丁。
+- 新增 `flash clear-wbi --yes`（用于已刷写但被旧 WBI 遮蔽的设备一键清头生效，不改动 `appFw.so`）与 `flash restore-wbi --yes`（从机内备份原样恢复 `WBI2` 快照头）。
+
 ## v0.2.0（2026-11-24）
 
 - 支持运行时修改 CP 代码区。

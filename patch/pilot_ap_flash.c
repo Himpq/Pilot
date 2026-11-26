@@ -28,6 +28,25 @@ static u64 pilot_ap_file_size;
 #endif
 #endif
 
+#ifndef PILOT_WBI_DEV_PATH
+#ifdef PILOT_FLASH_TEST
+#define PILOT_WBI_DEV_PATH "/tmp/pilotflash-test/nflasha5"
+#else
+#define PILOT_WBI_DEV_PATH "/dev/nflasha5"
+#endif
+#endif
+
+#ifndef PILOT_WBI_BACKUP_PATH
+#ifdef PILOT_FLASH_TEST
+#define PILOT_WBI_BACKUP_PATH "/tmp/pilotflash-test/pilot_wbi_hdr.bak"
+#else
+#define PILOT_WBI_BACKUP_PATH "/usr/lib/pilot_wbi_hdr.bak"
+#endif
+#endif
+
+#define PILOT_WBI_TMP_BACKUP_PATH "/tmp/jiritsu/pilotflash.wbi.bak"
+#define PILOT_WBI_HDR_SIZE        512UL
+
 #define AT_FDCWD (-100)
 #define O_RDONLY 0
 #define O_WRONLY 1
@@ -510,6 +529,164 @@ static long install_bootstrap(void)
     return install_bootstrap_mode(0);
 }
 
+static int wbi_is_magic(const unsigned char *b)
+{
+    return b[0] == 'W' && b[1] == 'B' && b[2] == 'I' && b[3] == '2';
+}
+
+static int wbi_is_all_zero(const unsigned char *b)
+{
+    for (usize i = 0; i < PILOT_WBI_HDR_SIZE; ++i) {
+        if (b[i] != 0)
+            return 0;
+    }
+    return 1;
+}
+
+static long save_wbi_backup_file(const char *path, const unsigned char *hdr, int preserve_existing)
+{
+    unsigned char check[PILOT_WBI_HDR_SIZE];
+    if (preserve_existing) {
+        long rfd = open_file(path, O_RDONLY, 0);
+        if (rfd >= 0) {
+            int valid = ((u64)file_size(rfd) == PILOT_WBI_HDR_SIZE) &&
+                        pread_exact(rfd, check, PILOT_WBI_HDR_SIZE, 0) &&
+                        wbi_is_magic(check);
+            (void)close_file(rfd);
+            if (valid)
+                return 0;
+        }
+    }
+    long fd = open_file(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+        return fd;
+    int ok = pwrite_exact(fd, hdr, PILOT_WBI_HDR_SIZE, 0);
+    long rc = ok ? sync_file(fd) : -2002;
+    if (!rc && (!pread_exact(fd, check, PILOT_WBI_HDR_SIZE, 0) ||
+                !bytes_equal(check, hdr, PILOT_WBI_HDR_SIZE)))
+        rc = -2003;
+    (void)close_file(fd);
+    return rc;
+}
+
+/* Back up the 512B WBI2 snapshot header (to /usr/lib/pilot_wbi_hdr.bak and
+ * /tmp/jiritsu/pilotflash.wbi.bak) and zero /dev/nflasha5[0..511] so cold boot
+ * loads the patched /usr/lib/appFw.so instead of stale WBI page cache.
+ * out_state: 0=already_clear, 1=cleared, 2=skipped (test env without nflasha5). */
+static long clear_wbi_header(int *out_state)
+{
+    unsigned char hdr[PILOT_WBI_HDR_SIZE];
+    unsigned char zeros[PILOT_WBI_HDR_SIZE];
+    unsigned char verify[PILOT_WBI_HDR_SIZE];
+
+    if (out_state) *out_state = 0;
+    long fd = open_file(PILOT_WBI_DEV_PATH, O_RDWR, 0);
+    if (fd < 0) {
+#ifdef PILOT_FLASH_TEST
+        if (fd == -2) {
+            if (out_state) *out_state = 2;
+            return 0;
+        }
+#endif
+        return fd;
+    }
+
+    if (!pread_exact(fd, hdr, PILOT_WBI_HDR_SIZE, 0)) {
+        (void)close_file(fd);
+        return -2000;
+    }
+    if (wbi_is_all_zero(hdr)) {
+        (void)close_file(fd);
+        if (out_state) *out_state = 0;
+        return 0;
+    }
+    if (!wbi_is_magic(hdr)) {
+        (void)close_file(fd);
+        return -2001;
+    }
+
+    long bak_rc = save_wbi_backup_file(PILOT_WBI_BACKUP_PATH, hdr, 1);
+    if (bak_rc < 0) {
+        (void)close_file(fd);
+        return bak_rc;
+    }
+    (void)save_wbi_backup_file(PILOT_WBI_TMP_BACKUP_PATH, hdr, 0);
+
+    for (usize i = 0; i < PILOT_WBI_HDR_SIZE; ++i)
+        zeros[i] = 0;
+    int ok = pwrite_exact(fd, zeros, PILOT_WBI_HDR_SIZE, 0);
+    long rc = ok ? sync_file(fd) : -2004;
+    if (!rc && (!pread_exact(fd, verify, PILOT_WBI_HDR_SIZE, 0) ||
+                !wbi_is_all_zero(verify)))
+        rc = -2005;
+    (void)close_file(fd);
+    if (!rc && out_state)
+        *out_state = 1;
+    return rc;
+}
+
+static void run_clear_wbi(void)
+{
+    long rw_result = remount_usr_rw();
+    if (rw_result < 0) {
+        emit_mount_failure(usr_statfs_stage ? "statfs_preflight" : "remount_rw",
+                           rw_result);
+        return;
+    }
+    int wbi_state = 0;
+    long wbi_rc = clear_wbi_header(&wbi_state);
+    long ro_result = remount_usr_ro();
+    if (wbi_rc < 0) {
+        emit_mount_failure(ro_result < 0 ? "wbi_clear_and_remount_ro" : "wbi_clear",
+                           wbi_rc);
+        return;
+    }
+    if (ro_result < 0) {
+        emit_result("RESULT=FAIL\nreason=remount_ro\nmode=clear-wbi\nrecovery=do_not_reboot");
+        return;
+    }
+    emit_result(wbi_state == 1
+                    ? "RESULT=OK\nmode=clear-wbi\nwbi=cleared\nremount_ro=0"
+                    : "RESULT=OK\nmode=clear-wbi\nwbi=already_clear\nremount_ro=0");
+}
+
+static void run_restore_wbi(void)
+{
+    unsigned char hdr[PILOT_WBI_HDR_SIZE];
+    unsigned char verify[PILOT_WBI_HDR_SIZE];
+
+    long bfd = open_file(PILOT_WBI_BACKUP_PATH, O_RDONLY, 0);
+    if (bfd < 0) {
+        emit_mount_failure("wbi_backup_open", bfd);
+        return;
+    }
+    int ok_read = ((u64)file_size(bfd) == PILOT_WBI_HDR_SIZE) &&
+                  pread_exact(bfd, hdr, PILOT_WBI_HDR_SIZE, 0) &&
+                  wbi_is_magic(hdr);
+    (void)close_file(bfd);
+    if (!ok_read) {
+        emit_result("RESULT=FAIL\nreason=wbi_backup_invalid");
+        return;
+    }
+
+    long fd = open_file(PILOT_WBI_DEV_PATH, O_RDWR, 0);
+    if (fd < 0) {
+        emit_mount_failure("wbi_dev_open", fd);
+        return;
+    }
+    int ok_wr = pwrite_exact(fd, hdr, PILOT_WBI_HDR_SIZE, 0);
+    long rc = ok_wr ? sync_file(fd) : -2006;
+    if (!rc && (!pread_exact(fd, verify, PILOT_WBI_HDR_SIZE, 0) ||
+                !bytes_equal(verify, hdr, PILOT_WBI_HDR_SIZE)))
+        rc = -2007;
+    (void)close_file(fd);
+    if (rc < 0) {
+        emit_mount_failure("wbi_restore_write", rc);
+        return;
+    }
+    emit_result("RESULT=OK\nmode=restore-wbi\nwbi=restored");
+}
+
 static void run_update_pilot(void)
 {
     long rw_result = remount_usr_rw();
@@ -638,14 +815,28 @@ static void run_write(const char *mode, int target_patched)
     }
 
     (void)close_file(fd);
+    int wbi_state = 0;
+    if (target_patched) {
+        long wbi_rc = clear_wbi_header(&wbi_state);
+        if (wbi_rc < 0) {
+            long ro_result = remount_usr_ro();
+            emit_mount_failure(ro_result < 0 ? "wbi_clear_and_remount_ro" : "wbi_clear",
+                               wbi_rc);
+            return;
+        }
+    }
     long ro_result = remount_usr_ro();
     if (ro_result < 0) {
         emit_result("RESULT=FAIL\nreason=remount_ro\nstate=patched\nrecovery=do_not_reboot");
         return;
     }
-    emit_result(target_patched
-                    ? "RESULT=OK\nmode=write\nstate=patched\nwindows=4\nfsync=0\nreadback=OK\nremount_ro=0"
-                    : "RESULT=OK\nmode=restore\nstate=baseline\nwindows=4\nfsync=0\nreadback=OK\nremount_ro=0");
+    if (target_patched) {
+        emit_result(wbi_state == 1
+                        ? "RESULT=OK\nmode=write\nstate=patched\nwindows=4\nfsync=0\nreadback=OK\nwbi=cleared\nremount_ro=0"
+                        : "RESULT=OK\nmode=write\nstate=patched\nwindows=4\nfsync=0\nreadback=OK\nwbi=already_clear\nremount_ro=0");
+    } else {
+        emit_result("RESULT=OK\nmode=restore\nstate=baseline\nwindows=4\nfsync=0\nreadback=OK\nremount_ro=0");
+    }
     (void)mode;
 }
 
@@ -670,6 +861,10 @@ void _init(void)
         run_write(mode, 0);
     } else if (text_is(mode, "pilot")) {
         run_update_pilot();
+    } else if (text_is(mode, "clear-wbi")) {
+        run_clear_wbi();
+    } else if (text_is(mode, "restore-wbi")) {
+        run_restore_wbi();
     } else {
         emit_result("RESULT=FAIL\nreason=unknown_mode");
     }

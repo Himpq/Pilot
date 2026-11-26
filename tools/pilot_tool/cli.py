@@ -41,7 +41,7 @@ def parser():
     logs.add_argument("--card", required=True, type=Path)
     logs.add_argument("--out", required=True, type=Path)
     flash = commands.add_parser("flash", help="call on_camera.py with external local inputs")
-    flash.add_argument("action", choices=("check", "install", "restore", "update-pilot", "clean", "prepare-ap", "cp-check", "cp-install", "cp-restore"))
+    flash.add_argument("action", choices=("check", "install", "restore", "update-pilot", "clear-wbi", "restore-wbi", "clean", "prepare-ap", "cp-check", "cp-install", "cp-restore"))
     flash.add_argument("--map", dest="map_path", type=Path)
     flash.add_argument("--transport-root", type=Path)
     flash.add_argument("--state-dir", type=Path)
@@ -79,7 +79,7 @@ def main(argv=None):
         elif args.command == "logs":
             result = export_logs(args.card, args.out)
         else:
-            writing = args.action in ("install", "restore", "update-pilot", "cp-install", "cp-restore")
+            writing = args.action in ("install", "restore", "update-pilot", "clear-wbi", "restore-wbi", "cp-install", "cp-restore")
             if writing and not args.yes:
                 raise ValueError("flash writes require --yes")
             script = Path(__file__).resolve().parents[2] / "patch/on_camera.py"

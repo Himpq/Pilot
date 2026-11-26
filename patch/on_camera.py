@@ -234,7 +234,8 @@ def classify_owned_files(files: dict[str, bytes | None], writer: bytes,
             continue
         if key == "plan" and plan is not None and data == plan:
             continue
-        if key == "mode" and data in (b"check\n", b"write\n", b"restore\n", b"pilot\n"):
+        if key == "mode" and data in (b"check\n", b"write\n", b"restore\n", b"pilot\n",
+                                      b"clear-wbi\n", b"restore-wbi\n"):
             continue
         if key == "result" and len(data) <= 256 and data.startswith(FLASH_HEADER):
             continue
@@ -507,10 +508,43 @@ def run_write(session: cr.Session, patch_map: dict, writer: bytes,
 
     remove_result_if_matches(session, result)
     if mode == "write":
+        pull_wbi_backup(session)
         print("INSTALL OK; fully power-cycle the camera to load the AP patch")
         print("restore uses the same explicit --map, --writer and --state-dir inputs with --restore --yes")
     else:
         print("RESTORE OK; fully power-cycle the camera to load the recorded baseline AP image")
+    return 0
+
+
+WBI_TMP_BACKUP_PATH = "/tmp/jiritsu/pilotflash.wbi.bak"
+
+
+def pull_wbi_backup(session: cr.Session) -> None:
+    data = session.read_path(WBI_TMP_BACKUP_PATH, missing=True)
+    if data and len(data) == 512 and data[:4] == b"WBI2":
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        dst = STATE_DIR / "wbi_hdr.bak"
+        if not dst.exists():
+            dst.write_bytes(data)
+            print(f"WBI header backup saved to {dst} (512 bytes, sha256={sha256(data)})")
+        else:
+            print(f"WBI header backup already preserved at {dst}")
+        remove_device_file(session, WBI_TMP_BACKUP_PATH)
+
+
+def run_wbi_action(session: cr.Session, writer: bytes, mode: str) -> int:
+    preload = session.read_path("/tmp/jiritsu/../../etc/ld.so.preload", missing=True)
+    if preload:
+        raise RuntimeError("/etc/ld.so.preload exists; refusing to invoke Jiritsu loader")
+    ensure_no_flash_files(session)
+    result = run_flash_module(session, writer, mode)
+    print_result(result)
+    if b"RESULT=OK" not in result:
+        return 6
+    if mode == "clear-wbi":
+        pull_wbi_backup(session)
+    remove_result_if_matches(session, result)
+    print(f"{mode.upper()} OK; fully power-cycle the camera now")
     return 0
 
 
@@ -560,6 +594,8 @@ def main() -> int:
     group.add_argument("--install", action="store_true", help="stage Pilot and install the AP patch")
     group.add_argument("--restore", action="store_true", help="restore the four original AP windows")
     group.add_argument("--update-pilot", action="store_true", help="update /usr/lib/pilot.so in place")
+    group.add_argument("--clear-wbi", action="store_true", help="back up and clear /dev/nflasha5 WBI2 header (512B)")
+    group.add_argument("--restore-wbi", action="store_true", help="restore /dev/nflasha5 WBI2 header from /usr/lib/pilot_wbi_hdr.bak")
     group.add_argument("--clean", action="store_true", help="remove recognized Pilot flash staging files")
     group.add_argument("--prepare-ap", action="store_true", help="read AP and prepare a camera-specific patch and writer")
     group.add_argument("--cp-check", action="store_true", help="check configured CP patch")
@@ -571,7 +607,7 @@ def main() -> int:
     add_path_arguments(parser)
     args = parser.parse_args()
 
-    if (args.install or args.restore or args.update_pilot or args.cp_install or args.cp_restore) and not args.yes:
+    if (args.install or args.restore or args.update_pilot or args.clear_wbi or args.restore_wbi or args.cp_install or args.cp_restore) and not args.yes:
         parser.error("write operations require --yes")
     paths = resolve_paths(args, REPO_ROOT)
     global MAP_PATH, PILOT_DSO_PATH, FLASH_MODULE_PATH, STATE_DIR
@@ -645,6 +681,12 @@ def main() -> int:
         if args.update_pilot:
             assert writer is not None
             return run_update_pilot(session, patch_map, writer, pilot)
+        if args.clear_wbi:
+            assert writer is not None
+            return run_wbi_action(session, writer, "clear-wbi")
+        if args.restore_wbi:
+            assert writer is not None
+            return run_wbi_action(session, writer, "restore-wbi")
         assert writer is not None
         return run_write(session, patch_map, writer, pilot,
                          "write" if args.install else "restore", force=args.force)
