@@ -92,6 +92,23 @@ class CpFlashTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "sha256 mismatch"):
                 cp_flash.run(FakeSession(b"axydeZ"), spec, "restore", Path(temp))
 
+    def test_sample_gate_blocks_before_full_hash_when_configured(self):
+        orig = b"a" * 100 + b"bc" + b"d" * 410
+        patched = b"a" * 100 + b"xy" + b"d" * 410
+        spec = {
+            "target": {
+                "size_bytes": len(orig),
+                "sha256": cp_flash.digest(orig),
+                "patched_sha256": cp_flash.digest(patched),
+                "sample_sha256": cp_flash.sample_digest(orig, {"target": {"size_bytes": len(orig)}, "patches": [{"offset": 100, "before": "6263", "after": "7879"}]}),
+            },
+            "patches": [{"offset": 100, "before": "6263", "after": "7879"}],
+        }
+        bad_anchor = b"Z" + orig[1:]
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(RuntimeError, "sample_sha256 mismatch"):
+                cp_flash.run(FakeSession(bad_anchor), spec, "install", Path(temp))
+
 
 if __name__ == "__main__":
     unittest.main()

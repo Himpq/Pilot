@@ -22,6 +22,26 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def sample_points(spec):
+    size = spec["target"]["size_bytes"]
+    pts = []
+    for pos in (0, size // 4, size // 2, (size * 3) // 4, max(0, size - 64)):
+        end = min(size, pos + 64)
+        if end > pos:
+            pts.append((pos, end - pos))
+    for offset, before, _ in windows(spec):
+        pts.append((offset, len(before)))
+    return pts
+
+
+def sample_digest(image, spec):
+    h = hashlib.sha256()
+    for offset, length in sample_points(spec):
+        h.update(struct.pack("<QI", offset, length))
+        h.update(image[offset:offset + length])
+    return h.hexdigest()
+
+
 def load_config(path):
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     if data.get("schema") != "pilot.patch-map.v1":
@@ -75,13 +95,18 @@ def stage(session, name, data):
 def run(session, spec, action, state_dir):
     image = session.read_path(CP_PATH)
     current = state(image, spec)
+    actual_sample = sample_digest(image, spec)
     actual_sha = digest(image)
-    print(f"CP image: {current} sha256={actual_sha}")
+    print(f"CP image: {current} sample_sha256={actual_sample} sha256={actual_sha}")
     if action == "check":
         return
     expected = "original" if action == "install" else "installed"
     if current != expected:
         raise RuntimeError(f"CP patch state must be {expected}; found {current}")
+    sample_key = "sample_sha256" if action == "install" else "patched_sample_sha256"
+    expected_sample = spec["target"].get(sample_key)
+    if expected_sample and actual_sample != expected_sample:
+        raise RuntimeError(f"CP sample_sha256 mismatch: expected {expected_sample}, got {actual_sample}")
     expected_sha = spec["target"]["sha256"] if action == "install" else spec["target"]["patched_sha256"]
     if actual_sha != expected_sha:
         raise RuntimeError(f"CP full-image sha256 mismatch: expected {expected_sha}, got {actual_sha}")
@@ -123,4 +148,4 @@ def run(session, spec, action, state_dir):
         if session.read(name, missing=True) == expected_data:
             session.select("/tmp/jiritsu/" + name)
             session.jiritsu(18, b"\0\xff", missing=True)
-    print(f"CP {action} complete sha256={digest(actual)}; power-cycle the camera")
+    print(f"CP {action} complete sample_sha256={sample_digest(actual, spec)} sha256={digest(actual)}; power-cycle the camera")
