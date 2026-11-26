@@ -1,0 +1,6 @@
+{
+  "modules": [
+    { "name": "pilot_menu_ui.so", "enabled": true },
+    { "name": "pilot_canvas.so", "enabled": true }
+  ]
+}
