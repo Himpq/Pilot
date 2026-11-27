@@ -1,9 +1,17 @@
 """Sony USB transport used by Pilot camera tools."""
 import os, sys, time
 from pathlib import Path
-_dlls = Path(sys.executable).parent / "Lib" / "site-packages" / "libusb_package"
+try:
+    # Resolve the bundled libusb-1.0.dll directory from the installed package: venv and conda
+    # layouts do not put site-packages next to the interpreter executable.
+    import libusb_package
+    _dlls = Path(libusb_package.__file__).resolve().parent
+except ImportError:
+    _dlls = Path(sys.prefix) / "Lib" / "site-packages" / "libusb_package"
 if _dlls.is_dir():
     os.environ["PATH"] = str(_dlls) + os.pathsep + os.environ.get("PATH", "")
+    if hasattr(os, "add_dll_directory"):  # Python 3.8+ ignores PATH for ctypes-loaded DLLs
+        os.add_dll_directory(str(_dlls))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "vendor" / "pmca-re"))
 import usb.util
 from pmca.usb.sony import SONY_ID_VENDOR, SonySenserAuthDevice, SonySenserCamera, SonySenserDevice
@@ -20,11 +28,13 @@ def log(msg):
 
 
 def dev_key(dev):
-    a = getattr(dev, "address", None)
-    if a is None:
-        inner = getattr(dev, "dev", None)
-        a = getattr(inner, "address", None)
-    return a if a is not None else hex(id(dev))
+    # Bus plus address is stable across reconnects; a bare address can repeat on another bus.
+    inner = getattr(dev, "handle", None) or getattr(dev, "dev", None) or dev
+    bus = getattr(inner, "bus", None)
+    address = getattr(inner, "address", None)
+    if bus is not None or address is not None:
+        return (bus, address)
+    return hex(id(dev))
 
 
 def open_libusb():

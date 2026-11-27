@@ -17,7 +17,9 @@ def sync(destination: Path, write=False):
     files = json.loads((source / "tools/public-files.json").read_text(encoding="utf-8"))
     if not isinstance(files, list) or len(files) != len(set(files)):
         raise ValueError("invalid public source list")
-    allowed_patch = {"patch/on_camera.py", "patch/on_camera_config.py", "patch/tests/test_on_camera_offline.py"}
+    allowed_patch = {"patch/on_camera.py", "patch/on_camera_config.py",
+                     "patch/tests/test_on_camera_offline.py",
+                     "patch/tests/test_on_camera_hardening.py"}
     changes = []
     for relative in files:
         path = Path(relative)

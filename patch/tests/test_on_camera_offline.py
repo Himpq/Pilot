@@ -39,14 +39,41 @@ class OnCameraOfflineTests(unittest.TestCase):
         from unittest.mock import Mock, patch
         module = load_on_camera()
         session = Mock()
-        session.read_path.return_value = None
-        with patch.object(module, "read_ap", return_value=b"patched"), \
-             patch.object(module, "ap_state", return_value="patched"), \
-             patch.object(module, "ensure_no_flash_files"), \
-             patch.object(module, "stage_pilot_dso", return_value=True), \
-             patch.object(module, "run_update_pilot", return_value=0) as update:
-            self.assertEqual(module.run_write(session, {}, b"writer", b"pilot", "write"), 0)
-            update.assert_called_once_with(session, {}, b"writer", b"pilot")
+
+        def read_path(path, missing=False):
+            return b"pilot" if path == module.PILOT_DEVICE_PATH else None
+
+        session.read_path.side_effect = read_path
+        patch_map = {
+            "schema": "pilot.patch-map.v1",
+            "target": {"model": "test", "firmware": "2.00", "binary_size": 256},
+            "patches": [
+                {"id": name, "file_offset": hex(offset), "length": 4,
+                 "original_bytes": "00000000", "target_bytes": "01020304"}
+                for name, offset in zip(("a", "b", "c", "d"), (32, 64, 96, 128))
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            module.STATE_DIR = Path(directory)
+            with patch.object(module, "read_ap", return_value=b"patched"), \
+                 patch.object(module, "ap_state", return_value="patched"), \
+                 patch.object(module, "ensure_no_flash_files"), \
+                 patch.object(module, "stage_pilot_dso", return_value=True), \
+                 patch.object(module, "backup_device_files"), \
+                 patch.object(module, "record_camera_state"), \
+                 patch.object(module, "pull_wbi_backup"), \
+                 patch.object(module, "remove_result_if_matches"), \
+                 patch.object(module, "run_flash_module",
+                              return_value=b"A6700PILOTFLASH\nRESULT=OK\n") as writer_run, \
+                 patch.object(module, "run_update_pilot", return_value=0) as update:
+                self.assertEqual(
+                    module.run_write(session, patch_map, b"writer", b"pilot", "write"), 0)
+        # Even when appFw.so is already patched, the writer must run so that
+        # /usr/lib/pilot.so is verified and the /dev/nflasha5 WBI2 snapshot header is cleared;
+        # the previous pilot.so-only shortcut left a stale WBI2 header that shadowed the patch
+        # on the next cold boot (issue #10 class of failure).
+        writer_run.assert_called_once_with(session, b"writer", "write", patch_map, b"pilot")
+        update.assert_not_called()
 
     def test_explicit_local_paths(self):
         import argparse
@@ -203,13 +230,21 @@ class OnCameraOfflineTests(unittest.TestCase):
             writer[18:20] = (183).to_bytes(2, "little")
             writer[64:84] = b"pilot_ap_generic_v1\0"
             writer_path.write_bytes(writer)
-            pilot_path.write_bytes(b"pilot-dso")
+            # A truncated ELF header is enough to SIGBUS the stock loader at boot, so
+            # pilot.so is validated as an AArch64 ELF64 module before anything is staged.
+            pilot = bytearray(256)
+            pilot[:6] = b"\x7fELF\x02\x01"
+            pilot[18:20] = (183).to_bytes(2, "little")
+            pilot_path.write_bytes(pilot)
             module.FLASH_MODULE_PATH = writer_path
             module.PILOT_DSO_PATH = pilot_path
             self.assertEqual(module.load_writer({}), bytes(writer))
-            self.assertEqual(module.load_pilot({}), b"pilot-dso")
+            self.assertEqual(module.load_pilot({}), bytes(pilot))
+            pilot_path.write_bytes(b"pilot-dso")
+            with self.assertRaisesRegex(RuntimeError, "valid AArch64 ELF64"):
+                module.load_pilot({})
 
-    def test_force_write_allows_unknown_windows_and_stages_actual_before_bytes(self):
+    def test_force_write_requires_known_window_bytes_and_converges_mixed_state(self):
         from unittest.mock import patch
         module = load_on_camera()
         from prepare_ap import WINDOW_IDS, plan_from_config
@@ -222,46 +257,58 @@ class OnCameraOfflineTests(unittest.TestCase):
                 for name, offset in zip(WINDOW_IDS, (32, 64, 96, 128))
             ],
         }
+        unknown = bytearray(256)
+        unknown[32:36] = b"DIFF"
         before = bytearray(256)
-        before[32:36] = b"DIFF"
+        before[32:36] = bytes.fromhex("01020304")
         after = bytearray(before)
-        for offset in (32, 64, 96, 128):
+        for offset in (64, 96, 128):
             after[offset:offset + 4] = bytes.fromhex("01020304")
-        session_files = {"/tmp/jiritsu/../../usr/lib/pilot.so": None}
-        staged = {}
 
-        class Session:
-            def __init__(self):
-                self.path = None
-                self.ap_reads = 0
-            def select(self, path):
-                self.path = path
-            def read_path(self, path, missing=False):
-                if path == module.AP_PATH:
-                    self.ap_reads += 1
-                    return bytes(before) if self.ap_reads == 1 else bytes(after)
-                return session_files.get(path)
-            def jiritsu(self, command, data, missing=False):
-                if command == 18:
-                    session_files.pop(self.path, None)
-                elif command == 16:
-                    session_files[self.path] = data[3:]
-                    staged[self.path] = data[3:]
-                    if self.path == module.FLASH_FILES["trigger"]:
-                        session_files[module.FLASH_FILES["result"]] = b"A6700PILOTFLASH\nRESULT=OK\n"
-                        session_files[module.PILOT_DEVICE_PATH] = b"pilot"
+        def make_session(current):
+            session_files = {"/tmp/jiritsu/../../usr/lib/pilot.so": None}
+            staged = {}
+
+            class Session:
+                def __init__(self):
+                    self.path = None
+                    self.ap_reads = 0
+
+                def select(self, path):
+                    self.path = path
+
+                def read_path(self, path, missing=False):
+                    if path == module.AP_PATH:
+                        self.ap_reads += 1
+                        return bytes(current) if self.ap_reads == 1 else bytes(after)
+                    return session_files.get(path)
+
+                def jiritsu(self, command, data, missing=False):
+                    if command == 18:
+                        session_files.pop(self.path, None)
+                    elif command == 16:
+                        session_files[self.path] = data[3:]
+                        staged[self.path] = data[3:]
+                        if self.path == module.FLASH_FILES["trigger"]:
+                            session_files[module.FLASH_FILES["result"]] = b"A6700PILOTFLASH\nRESULT=OK\n"
+                            session_files[module.PILOT_DEVICE_PATH] = b"pilot"
+
+            return Session(), staged
 
         with tempfile.TemporaryDirectory() as directory:
             module.STATE_DIR = Path(directory)
-            with self.assertRaisesRegex(RuntimeError, "--force"):
-                module.run_write(Session(), patch_map, b"writer", b"pilot", "write", force=False)
-            session = Session()
+            # Unknown bytes inside a patch window are refused, with or without --force.
+            for force in (False, True):
+                with self.assertRaisesRegex(RuntimeError, "force"):
+                    module.run_write(make_session(unknown)[0], patch_map, b"writer", b"pilot",
+                                     "write", force=force)
+            # A partially written two-stage barrier is a known mixed state: it converges
+            # without --force and stages the recorded plan.
+            session, staged = make_session(before)
             with patch.object(module, "remove_result_if_matches"):
-                rc = module.run_write(session, patch_map, b"writer", b"pilot", "write", force=True)
+                rc = module.run_write(session, patch_map, b"writer", b"pilot", "write", force=False)
             self.assertEqual(rc, 0)
-            expected_map = module.with_actual_windows(patch_map, bytes(before), "write")
-            self.assertEqual(expected_map["patches"][0]["original_bytes"], b"DIFF".hex())
-            self.assertEqual(staged[module.FLASH_FILES["plan"]], plan_from_config(expected_map))
+            self.assertEqual(staged[module.FLASH_FILES["plan"]], plan_from_config(patch_map))
 
 
 if __name__ == "__main__":
