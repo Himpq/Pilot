@@ -53,7 +53,7 @@ $pilotArgs = @(
   "--state-dir", "F:/PilotLocal/device-state"
 )
 
-# 只读演练：让相机侧刷写器自报环境（不写 /usr 和 /dev/nflasha5）
+# 只读自检：让相机侧刷写器输出当前环境信息（不写 /usr 和 /dev/nflasha5）
 python tools/pilot.py flash writer-check @pilotArgs
 
 # 读取相机 AP 和常驻 Pilot 的哈希
@@ -69,27 +69,14 @@ python tools/pilot.py flash update-pilot @pilotArgs --yes
 python tools/pilot.py flash install @pilotArgs --yes
 ```
 
-写入顺序与安全保证（`install` 与 `restore` 共用同一条通路）：
+写入前会备份原文件并校验配置中的 SHA-256；刷写器先备份并清零 `/dev/nflasha5` 的 `WBI2` 快照头，再分两步写入 `appFw.so`（各自 `fsync`），并以临时文件 `renameat` 替换 `/usr/lib/pilot.so`，最后回读校验。`update-pilot` 仅替换 `/usr/lib/pilot.so`，不修改 `appFw.so` 与 `WBI2`。
 
-1. 读取并整包校验 `appFw.so`：配置声明 `binary_sha256` / `patched_binary_sha256` 时，除四个补丁窗口外还比对整个 89 MB 文件的 SHA-256，避免在预期外的固件上盲写。
-2. 先备份将被修改的文件，再按配置校验刷写器和 `pilot.so` 的大小与 SHA-256、ELF 架构和刷写器标记。
-3. 刷写器先备份并清零 `/dev/nflasha5` 头 512 字节的 `WBI2` 休眠快照头，**之后**才修改 `appFw.so`（两阶段 `fsync` 屏障：先写窗口 1/2/3 落盘，再写窗口 0，各自 `fsync`；`restore` 反向）。若清零失败则 `appFw.so` 一字未改直接返回，不会留下"补丁已写入但冷启动仍被旧快照遮蔽"的中间态（[#10](https://github.com/Himpq/Pilot/issues/10) 的同类故障）。
-4. `/usr/lib/pilot.so` 通过临时文件 + `fsync` + 回读 + `renameat` + 目录 `fsync` 原子替换，写入中断或掉电不会留下被截断的 `pilot.so`（截断的 ELF 头会在开机加载时触发 `SIGBUS`）。
-5. 写入后回读校验；若首次回读与预期不符而刷写器报告成功，会在同一会话内再读一次以排除 USB 抖动。
+成功后**完整断电重启**：关机 → 拔出电池 ≥ 5 秒 → 装回 → 开机（仅按电源键待机不会刷新休眠快照与挂载状态）。
 
-`update-pilot` 只按第 4、5 条原子替换 `/usr/lib/pilot.so`（刷写器回报 `mode=pilot`、`atomic=1`、`readback=OK`），不修改 `appFw.so`，也不清零 `WBI2` 快照头，但同样需要完整断电重启才会加载新版框架；替换成功后如仍读到旧哈希，说明仍在旧系统的 page cache 中，此时不要重复写入，应先断电重启。
+- 若写入中途中断，`check` 会显示 `state: mixed`，直接重跑 `install` 或 `restore` 即可补齐，无需 `--force`（`--force` 仅放宽非窗口字节差异）。
+- 操作记录与备份保存在 `--state-dir` 下的 `device-state.json` 与 `backups/`。
 
-成功后按提示**完整断电重启**：关机 → 拔出电池 ≥ 5 秒 → 装回 → 开机，仅按电源键待机不会刷新休眠快照与挂载状态。
-
-`check` 按配置中的目标版本比对；升级前仍是旧版时，会报告 `persistent bootstrap: mismatch`。
-`writer-check` 的 `check` 模式全程只读，只输出：`state`（`baseline` / `patched` / `mixed`）、`window_mask`（已打补丁窗口的位图）、`usr_statfs_stage`、`usr_magic` 与 `usr_flags`（`/usr` 的实际挂载参数，原厂应为只读）、`usr_free`（剩余空间）、`wbi_status` 与 `wbi_hdr4`（`/dev/nflasha5` 快照头状态，`wbi2` / `0x57424932` 表示仍存在，清零后为 `zero`）。首次安装前建议先执行一次，确认 `/usr` 只读、`/dev/nflasha5` 可读后再写入；此模式同样会如实报告混合状态，便于判断上次写入是否完整落盘。
-
-若上次写入在屏障中途被打断，`check` 会显示 `state: mixed` 并逐窗口列出当前是原厂值还是补丁值；此时直接执行 `install` 或 `restore` 即可自动收敛到完整状态，无需 `--force`。
-`--force` 只放宽"非窗口字节与配置不一致"这一项，四个窗口内的字节仍必须是已知的原厂值或补丁值；出现无法识别的代码字节时即使命令行了 `--force` 也会拒绝写入，应先重新预检或人工核对。
-
-操作记录位于指定状态目录的 `device-state.json`，每次操作写入独立的 `attempt_id` 回执（含 `before`/`after` SHA-256、刷写器返回原文和备份位置），不沿用上一次运行的成功字段；原文件备份位于其中的 `backups/`。
-
-## 3. 刷写 CP 固件补丁（可选，高风险）
+## 3. 刷写 CP 固件补丁
 
 > **警告：CP 刷写直接修改相机协处理器固件 `cpapp-b.bin`，风险高于 AP 补丁与 SD 卡模块。**
 > - **适用范围**：仅限 Sony ILCE-6700 固件 2.00。刷写前必须先执行 `cp-check`，确认输出为 `CP image: original` 且完整 `sha256` 与配置一致；若状态为 `unknown` 或哈希不匹配，**切勿继续刷写**。
@@ -144,7 +131,7 @@ python tools/pilot.py flash restore @pilotArgs --yes
 
 ## 6. 彻底卸载
 
-`restore` 只恢复 AP 启动钩子，`/usr/lib/pilot.so`、SD 卡 `/pilot/` 与机内 `WBI2` 备份都会保留，便于再次安装。需要回到完全原厂状态时，先 `restore`，确认 `check` 已显示 `state: baseline`，再删除常驻库与机内备份：
+`restore` 只恢复 AP 启动钩子，会保留 `/usr/lib/pilot.so` 与机内 `WBI2` 备份。需要彻底清理时：
 
 ```powershell
 # 分两步：先确认 AP 已回原厂，再清理常驻文件
@@ -152,18 +139,15 @@ python tools/pilot.py flash check @pilotArgs          # 应显示 state=baseline
 python tools/pilot.py flash purge @pilotArgs --yes    # 删除 /usr/lib/pilot.so 与 /usr/lib/pilot_wbi_hdr.bak
 ```
 
-`purge` 只在 `appFw.so` 已回到原厂基线、且 `/dev/nflasha5` 快照头确认为全零时才删除，并回读确认两个文件都不存在（回报 `verify=enoent`）；否则直接拒绝（`reason=appfw_not_baseline` 或 `reason=wbi_not_clear`），不会在补丁仍生效时删掉框架。也可一次完成 restore、回读校验与清理：
+或一步执行 restore + purge：
 
 ```powershell
 python tools/pilot.py flash full-uninstall @pilotArgs --yes
 ```
 
-中途失败时会保留已有备份并按刷写器提示处理，不会自动重试破坏性步骤。
-SD 卡上的 `/pilot/` 目录和电脑端状态目录（备份与回执）由使用者自行删除。
-`flash clean` 只清理相机 `/tmp/jiritsu/` 下 Pilot 自身的暂存文件；`flash clean-foreign --yes` 会连同其他项目的探针文件一并删除。
-电脑端请保留状态目录里的 `backups/` 和 `wbi_hdr.bak`：`WBI2` 快照头一旦被清零，原厂休眠快照就只能从这份 512 字节备份恢复（`flash restore-wbi --yes` 仅在设备端头部为全零时写回）。
+`purge` 仅在 `appFw.so` 处于原厂基线且 `WBI2` 头为全零时执行。SD 卡 `/pilot/` 与电脑端 `--state-dir` 中的 `backups/`、`wbi_hdr.bak` 请按需自行保留（如需恢复原厂休眠快照 `restore-wbi`，必须依赖 `wbi_hdr.bak`）。
+`flash clean` 清理 `/tmp/jiritsu/` 下 Pilot 暂存文件；`flash clean-foreign --yes` 会一并清理其他项目的暂存文件。
 
 更多镜像补丁、AP/CP RAM 模块构建与工具参数见 [通用工具说明](../tools/README.md)。
-实机刷写与验证记录见 [A6700 2.00 刷写记录](FLASH-RECORD-A6700-2.00.md)。
 
 [返回首页](../README.md)

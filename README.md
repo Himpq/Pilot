@@ -30,7 +30,6 @@ Feel free to open an issue to report bugs, suggest new ideas, or even share your
 模块只需实现 `pilot_module_init`，即可通过 `PilotApi` 使用文件、日志、时间和内存等能力。`sdk/pilot_mod_util.h` 提供常用辅助函数；通用工具支持补丁描述、模块构建、部署和日志导出。
 
 - [安装与使用](docs/USAGE.md)
-- [A6700 2.00 实机刷写与验证记录](docs/FLASH-RECORD-A6700-2.00.md)
 - [模块开发与构建](docs/DEVELOPMENT.md)
 - [通用补丁工具](tools/README.md)
 - [下载模块和框架](https://github.com/Himpq/Pilot/releases)
