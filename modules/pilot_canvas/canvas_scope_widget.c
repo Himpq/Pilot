@@ -12,6 +12,7 @@
 
 #include "pilot_canvas_internal.h"
 #include "pilot_ui.h"
+#include "localization.h"
 
 #define SCOPE_PANEL_W 268
 #define SCOPE_PANEL_H 136
@@ -690,6 +691,13 @@ void canvas_scope_widget_init(void)
         .on_cfg_save = scope_on_cfg_save,
     };
     g_scope_panel = canvas_panel_register(&desc);
+    const PilotCanvasStrings *cs = canvas_ui_str();
+    g_scope_options[0].label = cs->opt_scope_mode;
+    g_scope_options[1].label = cs->opt_false_color;
+    g_scope_options[2].label = cs->opt_gamma_curve;
+    g_scope_options[3].label = cs->opt_wb_calib;
+    g_scope_options[4].label = cs->opt_disp_page;
+    g_scope_options[5].label = cs->opt_lock_pos;
     (void)pilot_ui_register_options(
         "pilot_canvas.so",
         g_scope_options,

@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "../../patch/pilot.h"
 #include "pilot_ui.h"
+#include "localization.h"
 
 #include <dlfcn.h>
 #include <link.h>
@@ -179,9 +180,9 @@ static PilotUiComponent g_version_components[] = {
     },
 };
 
-static const PilotUiPage g_pilot_version_page = {
+static PilotUiPage g_pilot_version_page = {
     .kind = PILOT_UI_PAGE_DETAIL,
-    .title = "Pilot 版本",
+    .title = "Pilot Version",
     .components = g_version_components,
     .component_count =
         sizeof(g_version_components) / sizeof(g_version_components[0]),
@@ -564,6 +565,44 @@ static int read_modules_json_fsys(char *buf, size_t cap)
     return read_pilot_file_fsys(path, buf, cap);
 }
 
+static PilotMenuLang g_menu_lang = PILOT_LANG_EN;
+
+static const PilotMenuStrings *ui_str(void)
+{
+    return pilot_menu_get_strings(g_menu_lang);
+}
+
+static void load_lang_config_fsys(void)
+{
+    char path[96];
+    char buf[128];
+    ensure_pilot_drive_letter();
+    snprintf(path, sizeof(path),
+             "%c:/pilot/modules/pilot_menu_ui/config.txt",
+             g_pilot_drive_letter);
+    if (!read_pilot_file_fsys(path, buf, sizeof(buf)))
+        return;
+    const char *p = strstr(buf, "lang=");
+    if (!p)
+        return;
+    PilotMenuLang parsed = PILOT_LANG_EN;
+    if (pilot_menu_parse_lang(p + 5, &parsed))
+        g_menu_lang = parsed;
+}
+
+static int save_lang_config_fsys(PilotMenuLang lang)
+{
+    char path[96];
+    char buf[32];
+    size_t idx = ((size_t)lang < (size_t)PILOT_LANG_COUNT) ? (size_t)lang : 0u;
+    ensure_pilot_drive_letter();
+    snprintf(path, sizeof(path),
+             "%c:/pilot/modules/pilot_menu_ui/config.txt",
+             g_pilot_drive_letter);
+    snprintf(buf, sizeof(buf), "lang=%s\n", k_pilot_lang_codes[idx]);
+    return write_pilot_file_fsys(path, buf, strlen(buf));
+}
+
 static int read_json_str_field(const char *json, const char *key,
                                char *out, size_t cap)
 {
@@ -788,25 +827,74 @@ static void refresh_module_ui_strings(size_t i)
 {
     if (i >= PILOT_LIST_ITEMS_MAX)
         return;
+    const PilotMenuStrings *s = ui_str();
     const char *tag = g_mod_enabled[i] ? "[_ON]" : "[OFF]";
     format_list_label_truncated(g_mod_list_labels[i],
                                 sizeof(g_mod_list_labels[i]),
                                 NULL, g_mod_titles[i],
                                 PILOT_LIST_TITLE_MAX_COLS);
     snprintf(g_mod_status_bufs[i], sizeof(g_mod_status_bufs[i]),
-             "Status: %s\nPath: %c:/pilot/%.63s",
-             g_mod_enabled[i] ? "Enabled" : "Disabled",
+             s->status_fmt,
+             g_mod_enabled[i] ? s->status_enabled : s->status_disabled,
              g_pilot_drive_letter, g_mod_names[i]);
     snprintf(g_mod_toggle_bufs[i], sizeof(g_mod_toggle_bufs[i]),
-             "模块开关: %s", tag);
+             s->module_toggle_fmt, tag);
 }
 
 static PilotModOptReg *find_module_opt_reg(const char *module_name);
 static const PilotUiPage *build_module_opt_list_page(void *user);
+static void on_lang_option_changed(PilotUiOption *opt, void *user);
+
+static PilotUiOption g_menu_ui_options[1] = {
+    {
+        .label = "Language",
+        .kind = PILOT_UI_OPT_ENUM,
+        .value = PILOT_LANG_EN,
+        .choices = k_pilot_lang_names,
+        .choice_count = PILOT_LANG_COUNT,
+        .on_change = on_lang_option_changed,
+    },
+};
+
+static void refresh_all_ui_language(void)
+{
+    const PilotMenuStrings *s = ui_str();
+    g_pilot_version_page.title = s->version_title;
+    g_menu_ui_options[0].label = s->lang_option_label;
+    g_menu_ui_options[0].value = (int32_t)g_menu_lang;
+    if (g_pilot_root_page.component_count > 0u)
+        g_root_components[0].label = s->version_title;
+    for (size_t i = 0; i < g_mod_count && i + 1u < PILOT_LIST_ITEMS_MAX; ++i) {
+        refresh_module_ui_strings(i);
+        g_root_components[i + 1u].value =
+            g_mod_enabled[i] ? s->toggle_on : s->toggle_off;
+    }
+}
+
+static void on_lang_option_changed(PilotUiOption *opt, void *user)
+{
+    (void)user;
+    if (!opt)
+        return;
+    PilotMenuLang next =
+        ((size_t)opt->value < (size_t)PILOT_LANG_COUNT)
+            ? (PilotMenuLang)opt->value
+            : PILOT_LANG_EN;
+    g_menu_lang = next;
+    (void)save_lang_config_fsys(next);
+    refresh_all_ui_language();
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "PILOT_UI_LANG lang=%s",
+             k_pilot_lang_codes[(size_t)next]);
+    ui_log(msg);
+}
 
 static const PilotUiPage *build_root_page(void *user)
 {
     (void)user;
+    const PilotMenuStrings *s = ui_str();
+    g_pilot_version_page.title = s->version_title;
     if (!g_mods_loaded) {
         char json[2048];
         if (read_modules_json_fsys(json, sizeof(json)))
@@ -829,7 +917,7 @@ static const PilotUiPage *build_root_page(void *user)
                                             sizeof(g_mod_titles[i]));
             if (!g_mod_desc_bufs[i][0])
                 snprintf(g_mod_desc_bufs[i], sizeof(g_mod_desc_bufs[i]),
-                         "No description.");
+                         "%s", s->no_description);
         }
         g_mods_loaded = 1;
     }
@@ -837,7 +925,7 @@ static const PilotUiPage *build_root_page(void *user)
     size_t count = 0;
     g_root_components[count++] = (PilotUiComponent){
         .kind = PILOT_UI_COMP_SUBMENU,
-        .label = "Pilot 版本",
+        .label = s->version_title,
         .target_page = &g_pilot_version_page,
     };
 
@@ -887,7 +975,7 @@ static const PilotUiPage *build_root_page(void *user)
         g_root_components[count++] = (PilotUiComponent){
             .kind = PILOT_UI_COMP_SUBMENU,
             .label = g_mod_list_labels[i],
-            .value = g_mod_enabled[i] ? "开" : "关",
+            .value = g_mod_enabled[i] ? s->toggle_on : s->toggle_off,
             .target_page = (reg && reg->count > 0u)
                                ? &g_mod_opt_pages[i]
                                : &g_modules_detail_pages[i],
@@ -909,6 +997,23 @@ static PilotModOptReg *find_module_opt_reg(const char *module_name)
     return NULL;
 }
 
+static PilotStatus register_options_locked(const char *module_name,
+                                         PilotUiOption *options,
+                                         size_t option_count)
+{
+    PilotModOptReg *reg = find_module_opt_reg(module_name);
+    if (!reg) {
+        if (g_opt_registry_count >= PILOT_LIST_ITEMS_MAX)
+            return PILOT_STATUS_RANGE;
+        reg = &g_opt_registry[g_opt_registry_count++];
+        snprintf(reg->module_name, sizeof(reg->module_name), "%.63s",
+                 module_name);
+    }
+    reg->options = options;
+    reg->count = option_count;
+    return PILOT_STATUS_OK;
+}
+
 __attribute__((visibility("default")))
 PilotStatus pilot_ui_register_options_v1(const char *module_name,
                                          PilotUiOption *options,
@@ -918,25 +1023,22 @@ PilotStatus pilot_ui_register_options_v1(const char *module_name,
         return PILOT_STATUS_INVALID_ARGUMENT;
 
     pthread_mutex_lock(&g_lock);
-    PilotModOptReg *reg = find_module_opt_reg(module_name);
-    if (!reg) {
-        if (g_opt_registry_count >= PILOT_LIST_ITEMS_MAX) {
-            pthread_mutex_unlock(&g_lock);
-            return PILOT_STATUS_RANGE;
-        }
-        reg = &g_opt_registry[g_opt_registry_count++];
-        snprintf(reg->module_name, sizeof(reg->module_name), "%.63s",
-                 module_name);
-    }
-    reg->options = options;
-    reg->count = option_count;
+    PilotStatus st = register_options_locked(module_name, options, option_count);
     pthread_mutex_unlock(&g_lock);
+    if (st != PILOT_STATUS_OK)
+        return st;
 
     char msg[128];
     snprintf(msg, sizeof(msg), "PILOT_UI_OPT_REG mod=%.63s count=%zu",
              module_name, option_count);
     ui_log(msg);
     return PILOT_STATUS_OK;
+}
+
+__attribute__((visibility("default")))
+int pilot_ui_get_language_v1(void)
+{
+    return (int)g_menu_lang;
 }
 
 static void format_option_list_value(char *val_out, size_t val_cap,
@@ -948,8 +1050,9 @@ static void format_option_list_value(char *val_out, size_t val_cap,
         val_out[0] = '\0';
         return;
     }
+    const PilotMenuStrings *s = ui_str();
     if (opt->kind == PILOT_UI_OPT_BOOL) {
-        snprintf(val_out, val_cap, "%s", opt->value ? "开" : "关");
+        snprintf(val_out, val_cap, "%s", opt->value ? s->toggle_on : s->toggle_off);
     } else if (opt->kind == PILOT_UI_OPT_ENUM) {
         const char *val = "?";
         if (opt->choices && opt->choice_count > 0u) {
@@ -962,7 +1065,7 @@ static void format_option_list_value(char *val_out, size_t val_cap,
     } else {
         const char *act = (opt->action_text && opt->action_text[0])
                               ? opt->action_text
-                              : "Run";
+                              : s->action_default;
         snprintf(val_out, val_cap, "%.24s (%d)", act, opt->value);
     }
 }
@@ -973,13 +1076,17 @@ static const PilotUiPage *build_module_opt_list_page(void *user)
     if (mod_idx >= g_mod_count)
         return &g_pilot_root_page;
 
+    const PilotMenuStrings *s = ui_str();
+    g_menu_ui_options[0].label = s->lang_option_label;
+    g_menu_ui_options[0].value = (int32_t)g_menu_lang;
+
     PilotModOptReg *reg = find_module_opt_reg(g_mod_names[mod_idx]);
     size_t count = 0u;
 
     /* Rows 0..opt_count-1: Module registered options (label left, value right) */
     if (reg && reg->options) {
         for (size_t k = 0; k < reg->count && count + 1u < PILOT_LIST_ITEMS_MAX; ++k) {
-            const char *lbl = reg->options[k].label ? reg->options[k].label : "Option";
+            const char *lbl = reg->options[k].label ? reg->options[k].label : s->option_default;
             format_list_label_truncated(g_mod_opt_labels[mod_idx][count],
                                         sizeof(g_mod_opt_labels[mod_idx][count]),
                                         NULL, lbl, PILOT_LIST_TITLE_MAX_COLS);
@@ -998,11 +1105,11 @@ static const PilotUiPage *build_module_opt_list_page(void *user)
     /* Last row: Module Info & Enable Switch (opens 0x1C3 detail page) */
     snprintf(g_mod_opt_labels[mod_idx][count],
              sizeof(g_mod_opt_labels[mod_idx][count]),
-             "模块信息与开关");
+             "%s", s->module_info_switch);
     g_mod_opt_comps[mod_idx][count] = (PilotUiComponent){
         .kind = PILOT_UI_COMP_SUBMENU,
         .label = g_mod_opt_labels[mod_idx][count],
-        .value = g_mod_enabled[mod_idx] ? "开" : "关",
+        .value = g_mod_enabled[mod_idx] ? s->toggle_on : s->toggle_off,
         .target_page = &g_modules_detail_pages[mod_idx],
     };
     ++count;
@@ -1906,7 +2013,8 @@ static int pilot_handle_opt_list_click(void *ctrl, size_t row_idx)
     if (c->kind != PILOT_UI_COMP_TOGGLE)
         return 0;
 
-    static const char *const k_on_off_choices[2] = { "开", "关" };
+    const PilotMenuStrings *s = ui_str();
+    const char *on_off_choices[2] = { s->toggle_on, s->toggle_off };
 
     PilotModOptReg *reg = find_module_opt_reg(g_mod_names[mod_idx]);
     if (!reg || !reg->options || row_idx >= reg->count)
@@ -1915,8 +2023,8 @@ static int pilot_handle_opt_list_click(void *ctrl, size_t row_idx)
     if (opt->kind == PILOT_UI_OPT_BOOL) {
         uint32_t cur = opt->value ? 0u : 1u;
         if (pilot_open_2a7_picker(ctrl, mod_idx, row_idx,
-                                  opt->label ? opt->label : "Option",
-                                  k_on_off_choices, 2u, cur))
+                                  opt->label ? opt->label : s->option_default,
+                                  on_off_choices, 2u, cur))
             return 1;
         opt->value = opt->value ? 0 : 1;
     } else if (opt->kind == PILOT_UI_OPT_ENUM && opt->choice_count > 0u) {
@@ -1924,7 +2032,7 @@ static int pilot_handle_opt_list_click(void *ctrl, size_t row_idx)
                            ? (uint32_t)opt->value
                            : 0u;
         if (pilot_open_2a7_picker(ctrl, mod_idx, row_idx,
-                                  opt->label ? opt->label : "Option",
+                                  opt->label ? opt->label : s->option_default,
                                   opt->choices, opt->choice_count, cur))
             return 1;
         opt->value = (int32_t)(((size_t)cur + 1u) % opt->choice_count);
@@ -2131,7 +2239,9 @@ static uint32_t pilot_1c3_confirm_hook(void *ctrl, void *ev)
                 refresh_module_ui_strings(idx);
                 g_toggle_string = g_mod_toggle_bufs[idx];
                 g_slot_strings[0] = g_mod_status_bufs[idx];
-                const char *en_val = g_mod_enabled[idx] ? "开" : "关";
+                const char *en_val = g_mod_enabled[idx]
+                                         ? ui_str()->toggle_on
+                                         : ui_str()->toggle_off;
                 if (idx + 1u < PILOT_LIST_ITEMS_MAX) {
                     g_root_components[idx + 1u].value = en_val;
                     if (g_active_page == &g_pilot_root_page)
@@ -2406,6 +2516,9 @@ static PilotStatus install_pilot_menu_ui(void)
                         (uintptr_t)pilot_1c3_confirm_hook);
 
     /* 6. Register group 0x535 and item IDs in non-setting runtime tree */
+    load_lang_config_fsys();
+    refresh_all_ui_language();
+    (void)register_options_locked("pilot_menu_ui.so", g_menu_ui_options, 1u);
     g_tree_entry.group_id = PILOT_GROUP_ID;
     g_tree_entry.desc_ptr = (uintptr_t)g_desc;
     g_active_page = resolve_page(&g_pilot_root_page);

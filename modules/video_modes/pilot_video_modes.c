@@ -21,6 +21,7 @@
 #define _GNU_SOURCE
 #include "pilot_mod_util.h"
 #include "pilot_ui.h"
+#include "localization.h"
 #include "cp_2k_og_tables.h"
 #include "cp_1080p_os_tables.h"
 #include "al6k_tables.h"
@@ -1058,11 +1059,12 @@ static int switch_mode(const PilotApi *api, int from_mode, int to_mode, int is_b
              kModeNames[from_mode], kModeNames[to_mode], ok, ms);
     pm_emit_log(api, line);
 
+    const VideoModesStrings *s = vmode_ui_str();
     char toast[96];
     if (ok)
-        snprintf(toast, sizeof(toast), "Video Mode: %s", kModeNames[to_mode]);
+        snprintf(toast, sizeof(toast), s->toast_ok_fmt, kModeNames[to_mode]);
     else
-        snprintf(toast, sizeof(toast), "Video Mode err (%s)", kModeNames[to_mode]);
+        snprintf(toast, sizeof(toast), s->toast_err_fmt, kModeNames[to_mode]);
     show_toast(toast, 4000u);
     return ok;
 }
@@ -1089,7 +1091,7 @@ static void on_vmode_changed(PilotUiOption *opt, void *user) {
 
     if (need_switch) {
         char busy[128];
-        snprintf(busy, sizeof(busy), "Switching to %s...\nPlease wait", kModeNames[next]);
+        snprintf(busy, sizeof(busy), vmode_ui_str()->busy_fmt, kModeNames[next]);
         (void)pilot_ui_show_busy(busy);
     }
 
@@ -1320,6 +1322,7 @@ PilotStatus pilot_module_init(const PilotApi *api) {
         pm_emit_log(api, emsg);
     }
 
+    g_vmode_options[0].label = vmode_ui_str()->option_label;
     PilotStatus ust = pilot_ui_register_options(
         MODULE_SO_NAME,
         g_vmode_options,

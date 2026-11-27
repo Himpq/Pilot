@@ -216,6 +216,31 @@ static inline PilotStatus pilot_ui_set_rid_override(uint32_t rid,
     return resolved.function(rid, text);
 }
 
+/*
+ * Query the active Menu UI language (0 = English, 1 = Simplified Chinese).
+ * Falls back to 0 (English) when pilot_menu_ui.so is not loaded.
+ */
+#define PILOT_UI_GET_LANG_SYMBOL "pilot_ui_get_language_v1"
+
+enum {
+    PILOT_UI_LANG_EN = 0,
+    PILOT_UI_LANG_ZH = 1
+};
+
+typedef int (*PilotUiGetLangFn)(void);
+
+static inline int pilot_ui_get_language(void)
+{
+    union {
+        void *object;
+        PilotUiGetLangFn function;
+    } resolved;
+    resolved.object = dlsym(RTLD_DEFAULT, PILOT_UI_GET_LANG_SYMBOL);
+    if (!resolved.object)
+        return PILOT_UI_LANG_EN;
+    return resolved.function();
+}
+
 #ifdef __cplusplus
 }
 #endif
