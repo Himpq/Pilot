@@ -372,6 +372,19 @@ int main(void)
     assert(pilot_ui_get_language_v1() == PILOT_LANG_EN);
     assert(strcmp(test_written_json, "lang=en\n") == 0);
 
+    /* Validate live runtime module description update on active 0x1C3 page. */
+    static uint8_t test_desc_sprite_dummy;
+    g_pilot_detail_active = 1;
+    g_detail_module_index = 1;
+    g_active_1c3_view = test_1c3_view;
+    pilot_set_string_rid_hook(&test_desc_sprite_dummy, PILOT_RID_SLOT_BASE + 1u);
+    assert(pilot_ui_set_module_desc_v1("pilot_6k.so", "Live 6K status: ready") == PILOT_STATUS_OK);
+    assert(strcmp(g_mod_desc_bufs[1], "Live 6K status: ready") == 0);
+    assert(strcmp(g_slot_strings[1], "Live 6K status: ready") == 0);
+    assert(pilot_ui_set_module_desc_v1("pilot_6k.so", NULL) == PILOT_STATUS_OK);
+    assert(strcmp(g_mod_desc_bufs[1], "No description.") == 0);
+    g_pilot_detail_active = 0;
+
     /* Validate 0x2A7 native option picker descriptor & selection callback. */
     pilot_2a7_prepare_choices("Aspect Mode", test_modes, 3u, 1u);
     assert(pilot_acc_get_group_desc_hook(NULL, PILOT_OPT_GROUP_ID) == g_opt_setting_desc);

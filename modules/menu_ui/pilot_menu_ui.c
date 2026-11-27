@@ -244,6 +244,16 @@ static const char *g_toggle_string = "";
 static void *g_active_1c3_view;
 static void *g_toggle_text_sprite;
 static void *g_status_text_sprite;
+static void *g_desc_text_sprite;
+
+typedef struct PilotModDescReg {
+    char module_name[64];
+    char desc[256];
+    int active;
+} PilotModDescReg;
+
+static PilotModDescReg g_desc_registry[PILOT_LIST_ITEMS_MAX];
+static size_t g_desc_registry_count;
 static void *g_list_item_sprites[PILOT_LIST_ITEMS_MAX];
 
 typedef struct {
@@ -858,6 +868,7 @@ static void refresh_module_ui_strings(size_t i)
 }
 
 static PilotModOptReg *find_module_opt_reg(const char *module_name);
+static PilotModDescReg *find_module_desc_reg(const char *module_name);
 static const PilotUiPage *build_module_opt_list_page(void *user);
 static void on_lang_option_changed(PilotUiOption *opt, void *user);
 
@@ -898,6 +909,9 @@ static void refresh_all_ui_language(void)
                 snprintf(g_mod_desc_bufs[i], sizeof(g_mod_desc_bufs[i]),
                          "%s", s->no_description);
         }
+        PilotModDescReg *dreg = find_module_desc_reg(g_mod_names[i]);
+        if (dreg && dreg->active)
+            snprintf(g_mod_desc_bufs[i], sizeof(g_mod_desc_bufs[i]), "%s", dreg->desc);
         refresh_module_ui_strings(i);
         g_root_components[i + 1u].value =
             g_mod_enabled[i] ? s->toggle_on : s->toggle_off;
@@ -951,6 +965,10 @@ static const PilotUiPage *build_root_page(void *user)
             if (!g_mod_desc_bufs[i][0])
                 snprintf(g_mod_desc_bufs[i], sizeof(g_mod_desc_bufs[i]),
                          "%s", s->no_description);
+            PilotModDescReg *dreg = find_module_desc_reg(g_mod_names[i]);
+            if (dreg && dreg->active)
+                snprintf(g_mod_desc_bufs[i], sizeof(g_mod_desc_bufs[i]),
+                         "%s", dreg->desc);
         }
         g_mods_loaded = 1;
     }
@@ -1068,10 +1086,82 @@ PilotStatus pilot_ui_register_options_v1(const char *module_name,
     return PILOT_STATUS_OK;
 }
 
+static PilotModDescReg *find_module_desc_reg(const char *module_name)
+{
+    if (!module_name || !module_name[0])
+        return NULL;
+    for (size_t i = 0; i < g_desc_registry_count; ++i) {
+        if (strcmp(g_desc_registry[i].module_name, module_name) == 0)
+            return &g_desc_registry[i];
+    }
+    return NULL;
+}
+
 __attribute__((visibility("default")))
 int pilot_ui_get_language_v1(void)
 {
     return (int)g_menu_lang;
+}
+
+__attribute__((visibility("default")))
+PilotStatus pilot_ui_set_module_desc_v1(const char *module_name,
+                                          const char *desc)
+{
+    if (!module_name || !module_name[0])
+        return PILOT_STATUS_INVALID_ARGUMENT;
+
+    pthread_mutex_lock(&g_lock);
+    PilotModDescReg *reg = find_module_desc_reg(module_name);
+    if (!reg) {
+        if (!desc || !desc[0]) {
+            pthread_mutex_unlock(&g_lock);
+            return PILOT_STATUS_OK;
+        }
+        if (g_desc_registry_count >= PILOT_LIST_ITEMS_MAX) {
+            pthread_mutex_unlock(&g_lock);
+            return PILOT_STATUS_RANGE;
+        }
+        reg = &g_desc_registry[g_desc_registry_count++];
+        snprintf(reg->module_name, sizeof(reg->module_name), "%.63s",
+                 module_name);
+    }
+
+    if (desc && desc[0]) {
+        snprintf(reg->desc, sizeof(reg->desc), "%.255s", desc);
+        reg->active = 1;
+    } else {
+        reg->desc[0] = '\0';
+        reg->active = 0;
+    }
+
+    for (size_t i = 0; i < g_mod_count; ++i) {
+        if (strcmp(g_mod_names[i], module_name) != 0)
+            continue;
+        if (reg->active) {
+            snprintf(g_mod_desc_bufs[i], sizeof(g_mod_desc_bufs[i]),
+                     "%s", reg->desc);
+        } else {
+            char dummy_title[64];
+            if (!read_module_meta_fsys(g_mod_names[i],
+                                       dummy_title, sizeof(dummy_title),
+                                       g_mod_desc_bufs[i],
+                                       sizeof(g_mod_desc_bufs[i])) ||
+                !g_mod_desc_bufs[i][0]) {
+                snprintf(g_mod_desc_bufs[i], sizeof(g_mod_desc_bufs[i]),
+                         "%s", ui_str()->no_description);
+            }
+        }
+        if (g_pilot_detail_active && g_detail_module_index == (int)i) {
+            g_slot_strings[1] = g_mod_desc_bufs[i];
+            if (g_orig_set_string_cstr && g_desc_text_sprite)
+                g_orig_set_string_cstr(g_desc_text_sprite, g_mod_desc_bufs[i]);
+            if (g_active_1c3_view && g_orig_view_update_1c3)
+                g_orig_view_update_1c3(g_active_1c3_view, 1u);
+        }
+        break;
+    }
+    pthread_mutex_unlock(&g_lock);
+    return PILOT_STATUS_OK;
 }
 
 static void format_option_list_value(char *val_out, size_t val_cap,
@@ -1496,6 +1586,8 @@ static void pilot_set_string_rid_hook(void *sprite, uint32_t rid)
             uint32_t slot = rid - PILOT_RID_SLOT_BASE;
             if (slot == 0u)
                 g_status_text_sprite = sprite;
+            else if (slot == 1u)
+                g_desc_text_sprite = sprite;
             const char *s = g_slot_strings[slot];
             g_orig_set_string_cstr(sprite, s ? s : "");
             return;
@@ -1631,6 +1723,7 @@ static void *pilot_1c3_view_factory_hook(void *buf, void *arg1, void *arg2,
     g_detail_page = page;
     g_toggle_text_sprite = NULL;
     g_status_text_sprite = NULL;
+    g_desc_text_sprite = NULL;
     bind_detail_page_to_layout(g_detail_page);
     ui_log("PILOT_UI_TRACE 1c3_view_factory open_detail");
     if (g_in_pilot_293)
@@ -1916,6 +2009,7 @@ static void reset_pilot_293_state(void)
     g_active_1c3_view = NULL;
     g_toggle_text_sprite = NULL;
     g_status_text_sprite = NULL;
+    g_desc_text_sprite = NULL;
     memset(g_list_item_sprites, 0, sizeof(g_list_item_sprites));
     g_in_pilot_293 = 0;
     g_pilot_detail_active = 0;

@@ -241,6 +241,32 @@ static inline int pilot_ui_get_language(void)
     return resolved.function();
 }
 
+/*
+ * Dynamically set or update a module's detail description text (0x1C3 page).
+ * Pass desc == NULL or "" to clear the runtime override and restore config.json.
+ * Updates immediately if the module's detail page is currently visible.
+ */
+#define PILOT_UI_SET_MOD_DESC_SYMBOL "pilot_ui_set_module_desc_v1"
+
+typedef PilotStatus (*PilotUiSetModDescFn)(const char *module_name,
+                                           const char *desc);
+
+static inline PilotStatus pilot_ui_set_module_desc(const char *module_name,
+                                                   const char *desc)
+{
+    if (!module_name || !module_name[0])
+        return PILOT_STATUS_INVALID_ARGUMENT;
+
+    union {
+        void *object;
+        PilotUiSetModDescFn function;
+    } resolved;
+    resolved.object = dlsym(RTLD_DEFAULT, PILOT_UI_SET_MOD_DESC_SYMBOL);
+    if (!resolved.object)
+        return PILOT_STATUS_NOT_FOUND;
+    return resolved.function(module_name, desc);
+}
+
 #ifdef __cplusplus
 }
 #endif
