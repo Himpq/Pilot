@@ -8,7 +8,7 @@ Pilot 是索尼相机的模块化扩展框架，支持运行时访问 AP / CP �
 <table>
   <tr>
     <td width="50%"><img width="100%" alt="Pilot 界面" src="https://github.com/user-attachments/assets/01ff953c-8194-448d-98f2-8f38e3fe164e" /></td>
-    <td width="50%"><img width="100%" alt="模块列表" src="docs/assets/screenshots/pilot_module_list.png" /></td>
+    <td width="50%"><img width="100%" alt="De-Squeeze 实时取景" src="modules/desqueeze/assets/desqueeze_view.png" /></td>
   </tr>
   <tr>
     <td width="50%"><img width="100%" alt="Video Mode 菜单" src="docs/assets/screenshots/videoMode_menu.png" /></td>
