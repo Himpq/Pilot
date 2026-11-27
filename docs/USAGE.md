@@ -1,5 +1,7 @@
 # 使用方式
 
+中文 · [English](USAGE_EN.md)
+
 框架发布下载：[Releases](https://github.com/Himpq/Pilot/releases)。适用 Sony ILCE-6700 固件 2.00，模块 ABI 为 2。电脑端工具需要 Python 3.10 或更新版本。
 
 ## 1. 准备文件
