@@ -1,12 +1,16 @@
-/* A6700 Unified Video Modes Pilot Module (Stock / 2K OpenGate / 6K HS / 1080p 6K OS)
+/* A6700 Unified Video Modes Pilot Module
+ *   (Stock / 2K OpenGate / 6K HS / 1080p 6K OS / 4K OpenGate / 5.76K OpenGate)
  *
- * Combines 2K OpenGate (1920x1280 3:2 on HD 24-60p), 6K (5760x3240 on XAVC HS
- * 24p/25p/30p/50p), and 6K->1080p Oversampling (5952x3348 full readout on HD
- * 24-60p) into a single mutually-exclusive module:
- *   - Single Pilot Menu enum ("Video Mode"):
- *       Stock / 2K OpenGate / 6K (HS 24-50p) / 1080p (6K OS)
- *   - Natural 100% mutual exclusion (never collides on CP idx10 or 3:2 VDF)
- *   - Single config.txt ("mode=0|1|2|3"), single worker thread (zero CP DMA race)
+ * Combines:
+ *   - 2K OpenGate (1920x1280 3:2 on HD 24-60p)
+ *   - 6K HS (5760x3240 on XAVC HS 24p/25p/30p/50p)
+ *   - 1080p 6K OS (5952x3348 full readout on HD 24-60p)
+ *   - 4K OpenGate (3840x2560 3:2 on 24p/25p) — Credits: GitHub @resaviewsgit, Instagram @resaviews
+ *   - 5.76K OpenGate (5760x3840 3:2 on 24p/25p) — Credits: GitHub @resaviewsgit, Instagram @resaviews
+ * into a single mutually-exclusive module:
+ *   - Single Pilot Menu enum ("Video Mode")
+ *   - Natural 100% mutual exclusion (never collides on CP idx3/idx10 or 3:2 VDF)
+ *   - Single config.txt ("mode=0|1|2|3|4|5"), single worker thread (zero CP DMA race)
  *   - Native 0x260 Processing Dialog during hot-switch
  *   - Dynamic native Movie File Format menu text overrides via pilot_menu_ui
  *   - Automatic appFw pipeline reload: seq 0xCA (sequence_set_movie_format)
@@ -19,6 +23,7 @@
 #include "pilot_ui.h"
 #include "cp_2k_og_tables.h"
 #include "cp_1080p_os_tables.h"
+#include "al6k_tables.h"
 
 #include <fcntl.h>
 #include <pthread.h>
@@ -29,11 +34,6 @@
 #include <time.h>
 #include <unistd.h>
 
-typedef uint8_t  u8;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef uint64_t u64;
-
 #define MODULE_SO_NAME    "pilot_video_modes.so"
 #define CONFIG_FILE_NAME  "config.txt"
 
@@ -42,14 +42,18 @@ enum {
     VMODE_OG2K   = 1,
     VMODE_6K     = 2,
     VMODE_1080OS = 3,
-    VMODE_COUNT  = 4
+    VMODE_OG4K   = 4,
+    VMODE_OG57K  = 5,
+    VMODE_COUNT  = 6
 };
 
 static const char *const kModeNames[VMODE_COUNT] = {
     "Stock",
     "2K OpenGate",
     "6K 420 (24-50p)",
-    "1080p (6K OS)"
+    "1080p (6K OS)",
+    "4K OpenGate (24-25p)",
+    "5.76K OpenGate (24-25p)"
 };
 
 /* --- Shared hardware bases --- */
@@ -113,6 +117,7 @@ static int g_cp6k_saved = 0;
 static u8  g_cp6k_orig_su = 0;
 static u32 g_cp6k_orig_kp446 = 0;
 static u32 g_cp6k_kp498 = 0;
+static int g_timing_pal = -1;
 static u32 g_cp6k_rec46_va = 0;
 static u32 g_cp6k_rec8a_va = 0;
 static u8  g_cp6k_orig_rec46[60];
@@ -771,6 +776,207 @@ static int run_6k(const PilotApi *api, int enable) {
 }
 
 /* =========================================================================
+ *  PART 4: 4K OpenGate (3840x2560) & 5.76K OpenGate (5760x3840)
+ *          Credits: GitHub @resaviewsgit, Instagram @resaviews
+ * ========================================================================= */
+static int detect_timing_pal(const PilotApi *api) {
+    if (g_timing_pal >= 0)
+        return g_timing_pal;
+    u8 b = 0;
+    if (!api || !api->cp_mem || !api->cp_mem->read ||
+        api->cp_mem->read(0x025DAEACULL + 0xBCULL, &b, 1u) != PILOT_STATUS_OK)
+        return 0;
+    if (b == 0x66u || b == 0x22u) {
+        g_timing_pal = 1;
+        return 1;
+    }
+    if (b == 0x7Fu || b == 0x3Eu) {
+        g_timing_pal = 0;
+        return 0;
+    }
+    return 0;
+}
+
+static const char *apply_al_libmpr_items(const al6k_ap_patch_t *items, size_t count,
+                                         int enable, u32 *applied, u32 *skipped) {
+    u64 base = pm_find_so_base("libmpr.so");
+    if (!base) return "LIBMPR_NOT_FOUND";
+    for (size_t i = 0; i < count; ++i) {
+        const al6k_ap_patch_t *it = &items[i];
+        const u8 *exp = enable ? it->old_b : it->new_b;
+        const u8 *rep = enable ? it->new_b : it->old_b;
+        u8 *dst = (u8 *)(uintptr_t)(base + it->addr);
+        if (memcmp(dst, rep, it->len) == 0) { (*skipped)++; continue; }
+        if (memcmp(dst, exp, it->len) != 0) return "LIBMPR_MISMATCH";
+        u64 page = (base + it->addr) & ~(PM_PAGE_SIZE - 1ULL);
+        size_t span = (size_t)((((base + it->addr) - page) + it->len + PM_PAGE_SIZE - 1ULL) & ~(PM_PAGE_SIZE - 1ULL));
+        int is_code = (it->addr < 0x270000ULL);
+        int orig_prot = is_code ? (PROT_READ | PROT_EXEC) : PROT_READ;
+        if (mprotect((void *)(uintptr_t)page, span, PROT_READ | PROT_WRITE | PROT_EXEC) != 0)
+            return "MPROTECT_RW_FAIL";
+        memcpy(dst, rep, it->len);
+        __builtin___clear_cache((char *)dst, (char *)(dst + it->len));
+        (void)mprotect((void *)(uintptr_t)page, span, orig_prot);
+        if (memcmp(dst, rep, it->len) != 0) return "LIBMPR_VERIFY_FAIL";
+        (*applied)++;
+    }
+    return "APPLY_OK";
+}
+
+static const char *apply_al_avcam_items(const al6k_ap_patch_t *items, size_t count,
+                                        int enable, u32 *applied, u32 *skipped) {
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) return "DEVMEM_OPEN_FAIL";
+    u8 cur[32], rb[32];
+    for (size_t i = 0; i < count; ++i) {
+        const al6k_ap_patch_t *it = &items[i];
+        const u8 *exp = enable ? it->old_b : it->new_b;
+        const u8 *rep = enable ? it->new_b : it->old_b;
+        u64 phys = AVCAM_BASE_PHYS + it->addr;
+        if (it->len == 0u || it->len > sizeof(cur)) { close(fd); return "AVCAM_LEN_ERR"; }
+        if (pread(fd, cur, it->len, (off_t)phys) != (ssize_t)it->len) { close(fd); return "AVCAM_RD_FAIL"; }
+        if (memcmp(cur, rep, it->len) == 0) { (*skipped)++; continue; }
+        if (memcmp(cur, exp, it->len) != 0) { close(fd); return "AVCAM_MISMATCH"; }
+        u64 page = phys & ~0xFFFULL;
+        u64 p_off = phys - page;
+        size_t map_len = (p_off + it->len > 0x1000ULL) ? 0x2000u : 0x1000u;
+        void *m = mmap(0, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)page);
+        if (m == MAP_FAILED) { close(fd); return "AVCAM_MMAP_FAIL"; }
+        u8 *dst = (u8 *)m + p_off;
+        memcpy(dst, rep, it->len);
+        pm_dcache_clean_inval(dst, it->len);
+        munmap(m, map_len);
+        if (pread(fd, rb, it->len, (off_t)phys) != (ssize_t)it->len || memcmp(rb, rep, it->len) != 0) {
+            close(fd);
+            return "AVCAM_RB_FAIL";
+        }
+        (*applied)++;
+    }
+    close(fd);
+    return "APPLY_OK";
+}
+
+static const char *apply_al_cp_ro_items(const PilotApi *api, const al6k_cp_patch_t *items,
+                                        size_t count, int enable, u32 *applied, u32 *skipped) {
+    for (size_t k = 0; k < count; ++k) {
+        size_t i = enable ? k : (count - 1u - k);
+        const al6k_cp_patch_t *it = &items[i];
+        const u8 *exp = enable ? it->old_b : it->new_b;
+        const u8 *rep = enable ? it->new_b : it->old_b;
+        PilotStatus rc = pm_cp_patch_idempotent(api, (u64)it->addr, exp, rep, (size_t)it->len,
+                                                applied, skipped);
+        if (rc != PILOT_STATUS_OK) {
+            u8 cur[4] = {0};
+            (void)api->cp_mem->read((u64)it->addr, cur, it->len < 4u ? it->len : 4u);
+            char err[128];
+            snprintf(err, sizeof(err),
+                     "VMOD_UIPC_ERR idx=%u va=0x%08x len=%u en=%d rc=%d cur=%02x%02x%02x%02x",
+                     (unsigned)i, it->addr, (unsigned)it->len, enable, (int)rc,
+                     cur[0], cur[1], cur[2], cur[3]);
+            pm_emit_log(api, err);
+            return "CP_UIPC_FAIL";
+        }
+    }
+    return "APPLY_OK";
+}
+
+static const char *apply_al_cp_ram_items(const PilotApi *api, const al6k_cp_patch_t *items,
+                                         size_t count, int enable, u32 *applied, u32 *skipped) {
+    u8 cur[64], rb[64];
+    for (size_t k = 0; k < count; ++k) {
+        size_t i = enable ? k : (count - 1u - k);
+        const al6k_cp_patch_t *it = &items[i];
+        const u8 *exp = enable ? it->old_b : it->new_b;
+        const u8 *rep = enable ? it->new_b : it->old_b;
+        if (it->len == 0u || it->len > sizeof(cur)) return "CP_LEN_ERR";
+        if (api->cp_mem->read((u64)it->addr, cur, it->len) != PILOT_STATUS_OK) return "CP_DMA_RD_FAIL";
+        if (memcmp(cur, rep, it->len) == 0) { (*skipped)++; continue; }
+        if (memcmp(cur, exp, it->len) != 0) {
+            char err[128];
+            snprintf(err, sizeof(err), "VMOD_DMA_ERR idx=%u va=0x%08x step=cmp cur=%02x%02x%02x%02x",
+                     (unsigned)i, it->addr, cur[0], it->len > 1u ? cur[1] : 0u,
+                     it->len > 2u ? cur[2] : 0u, it->len > 3u ? cur[3] : 0u);
+            pm_emit_log(api, err);
+            return "CP_DMA_MISMATCH";
+        }
+        if (api->cp_mem->write((u64)it->addr, rep, it->len) != PILOT_STATUS_OK) {
+            if (api->cp_mem->patch((u64)it->addr, exp, rep, it->len) != PILOT_STATUS_OK)
+                return "CP_DMA_WR_FAIL";
+        }
+        if (api->cp_mem->read((u64)it->addr, rb, it->len) != PILOT_STATUS_OK || memcmp(rb, rep, it->len) != 0)
+            return "CP_DMA_RB_FAIL";
+        (*applied)++;
+    }
+    return "APPLY_OK";
+}
+
+static int run_al_og(const PilotApi *api, int is_4k, int enable) {
+    u32 w_cp = 0, sk_cp = 0, w_mp = 0, sk_mp = 0, w_av = 0, sk_av = 0;
+    const char *rc_mp = "SKIP", *rc_av = "SKIP", *rc_lcd = "SKIP";
+    const char *rc_sen_ro = "SKIP", *rc_dmm = "SKIP", *rc_sen_ram = "SKIP";
+    const char *rc_srec = "SKIP", *rc_cp = "SKIP";
+
+    int pal = detect_timing_pal(api);
+    const al6k_cp_patch_t *srec_ptr = pal ? AL6K_SREC_PAL_CP_RAM : AL6K_SREC_NTSC_CP_RAM;
+    size_t srec_n = pal ? AL6K_SREC_PAL_CP_RAM_COUNT : AL6K_SREC_NTSC_CP_RAM_COUNT;
+    const al6k_cp_patch_t *mode_cp = is_4k ? AL6K_4K_CP_RAM : AL6K_57K_CP_RAM;
+    size_t mode_cp_n = is_4k ? AL6K_4K_CP_RAM_COUNT : AL6K_57K_CP_RAM_COUNT;
+    const al6k_ap_patch_t *mode_mp = is_4k ? AL6K_4K_LIBMPR : AL6K_57K_LIBMPR;
+    size_t mode_mp_n = is_4k ? AL6K_4K_LIBMPR_COUNT : AL6K_57K_LIBMPR_COUNT;
+    const al6k_ap_patch_t *mode_av = is_4k ? AL6K_4K_AVCAM : AL6K_57K_AVCAM;
+    size_t mode_av_n = is_4k ? AL6K_4K_AVCAM_COUNT : AL6K_57K_AVCAM_COUNT;
+
+    if (enable) {
+        /* Cold AP + AV-CAM + CP RO tables first; live DMM/Sensor/idx3 RAM last right before 0xCA */
+        rc_mp = apply_al_libmpr_items(mode_mp, mode_mp_n, 1, &w_mp, &sk_mp);
+        rc_av = apply_al_avcam_items(mode_av, mode_av_n, 1, &w_av, &sk_av);
+        rc_lcd = apply_al_cp_ro_items(api, AL6K_LCD_CP_RO, AL6K_LCD_CP_RO_COUNT, 1, &w_cp, &sk_cp);
+        if (strcmp(rc_lcd, "APPLY_OK") == 0)
+            rc_sen_ro = apply_al_cp_ro_items(api, AL6K_SENSOR_CP_RO, AL6K_SENSOR_CP_RO_COUNT, 1, &w_cp, &sk_cp);
+        if (strcmp(rc_sen_ro, "APPLY_OK") == 0) {
+            rc_dmm = apply_al_cp_ram_items(api, AL6K_DMM_CP_RAM, AL6K_DMM_CP_RAM_COUNT, 1, &w_cp, &sk_cp);
+            if (strcmp(rc_dmm, "APPLY_OK") == 0)
+                rc_sen_ram = apply_al_cp_ram_items(api, AL6K_SENSOR_CP_RAM, AL6K_SENSOR_CP_RAM_COUNT, 1, &w_cp, &sk_cp);
+            if (strcmp(rc_sen_ram, "APPLY_OK") == 0)
+                rc_srec = apply_al_cp_ram_items(api, srec_ptr, srec_n, 1, &w_cp, &sk_cp);
+            if (strcmp(rc_srec, "APPLY_OK") == 0)
+                rc_cp = apply_al_cp_ram_items(api, mode_cp, mode_cp_n, 1, &w_cp, &sk_cp);
+        }
+    } else {
+        rc_cp = apply_al_cp_ram_items(api, mode_cp, mode_cp_n, 0, &w_cp, &sk_cp);
+        if (strcmp(rc_cp, "APPLY_OK") == 0)
+            rc_srec = apply_al_cp_ram_items(api, srec_ptr, srec_n, 0, &w_cp, &sk_cp);
+        if (strcmp(rc_srec, "APPLY_OK") == 0)
+            rc_sen_ram = apply_al_cp_ram_items(api, AL6K_SENSOR_CP_RAM, AL6K_SENSOR_CP_RAM_COUNT, 0, &w_cp, &sk_cp);
+        if (strcmp(rc_sen_ram, "APPLY_OK") == 0)
+            rc_dmm = apply_al_cp_ram_items(api, AL6K_DMM_CP_RAM, AL6K_DMM_CP_RAM_COUNT, 0, &w_cp, &sk_cp);
+        if (strcmp(rc_dmm, "APPLY_OK") == 0)
+            rc_sen_ro = apply_al_cp_ro_items(api, AL6K_SENSOR_CP_RO, AL6K_SENSOR_CP_RO_COUNT, 0, &w_cp, &sk_cp);
+        if (strcmp(rc_sen_ro, "APPLY_OK") == 0)
+            rc_lcd = apply_al_cp_ro_items(api, AL6K_LCD_CP_RO, AL6K_LCD_CP_RO_COUNT, 0, &w_cp, &sk_cp);
+        rc_mp = apply_al_libmpr_items(mode_mp, mode_mp_n, 0, &w_mp, &sk_mp);
+        rc_av = apply_al_avcam_items(mode_av, mode_av_n, 0, &w_av, &sk_av);
+    }
+
+    char line[256];
+    snprintf(line, sizeof(line),
+             "%s en=%d pal=%d dmm=%s sro=%s sram=%s srec=%s cp=%s lcd=%s mpr=%s av=%s w=%u/%u/%u sk=%u/%u/%u",
+             is_4k ? "VMOD_OG4K" : "VMOD_OG57K", enable, pal,
+             rc_dmm, rc_sen_ro, rc_sen_ram, rc_srec, rc_cp, rc_lcd, rc_mp, rc_av,
+             w_cp, w_mp, w_av, sk_cp, sk_mp, sk_av);
+    pm_emit_log(api, line);
+
+    return (strcmp(rc_dmm, "APPLY_OK") == 0) &&
+           (strcmp(rc_sen_ro, "APPLY_OK") == 0) &&
+           (strcmp(rc_sen_ram, "APPLY_OK") == 0) &&
+           (strcmp(rc_srec, "APPLY_OK") == 0) &&
+           (strcmp(rc_cp, "APPLY_OK") == 0) &&
+           (strcmp(rc_lcd, "APPLY_OK") == 0) &&
+           (strcmp(rc_mp, "APPLY_OK") == 0) &&
+           (strcmp(rc_av, "APPLY_OK") == 0);
+}
+
+/* =========================================================================
  *  Dynamic Native UI File Format Label Overrides
  * ========================================================================= */
 static void update_format_labels(int mode) {
@@ -786,6 +992,14 @@ static void update_format_labels(int mode) {
         (void)pilot_ui_set_rid_override(RID_XAVC_HS_4K, 0);
         (void)pilot_ui_set_rid_override(RID_XAVC_S_HD,  "S HD 6KOS (24-60p)");
         (void)pilot_ui_set_rid_override(RID_XAVC_SI_HD, "S-I HD 6KOS (24-60p)");
+    } else if (mode == VMODE_OG4K) {
+        (void)pilot_ui_set_rid_override(RID_XAVC_HS_4K, "HS 4K OG (24-25p)");
+        (void)pilot_ui_set_rid_override(RID_XAVC_S_HD,  0);
+        (void)pilot_ui_set_rid_override(RID_XAVC_SI_HD, 0);
+    } else if (mode == VMODE_OG57K) {
+        (void)pilot_ui_set_rid_override(RID_XAVC_HS_4K, "HS 5.76K OG (24-25p)");
+        (void)pilot_ui_set_rid_override(RID_XAVC_S_HD,  0);
+        (void)pilot_ui_set_rid_override(RID_XAVC_SI_HD, 0);
     } else {
         (void)pilot_ui_set_rid_override(RID_XAVC_HS_4K, 0);
         (void)pilot_ui_set_rid_override(RID_XAVC_S_HD,  0);
@@ -794,7 +1008,8 @@ static void update_format_labels(int mode) {
 }
 
 /* =========================================================================
- *  Mutually-Exclusive State Machine (Stock <-> 2K OG <-> 6K <-> 1080p 6K OS)
+ *  Mutually-Exclusive State Machine
+ *  (Stock <-> 2K OG <-> 6K <-> 1080p 6K OS <-> 4K OG <-> 5.76K OG)
  * ========================================================================= */
 static int switch_mode(const PilotApi *api, int from_mode, int to_mode, int is_boot) {
     if (from_mode == to_mode) return 1;
@@ -810,6 +1025,10 @@ static int switch_mode(const PilotApi *api, int from_mode, int to_mode, int is_b
         ok = run_6k(api, 0);
     else if (from_mode == VMODE_1080OS)
         ok = run_1080os(api, 0);
+    else if (from_mode == VMODE_OG4K)
+        ok = run_al_og(api, 1, 0);
+    else if (from_mode == VMODE_OG57K)
+        ok = run_al_og(api, 0, 0);
 
     /* 2. Apply new target mode */
     if (ok) {
@@ -819,6 +1038,10 @@ static int switch_mode(const PilotApi *api, int from_mode, int to_mode, int is_b
             ok = run_6k(api, 1);
         else if (to_mode == VMODE_1080OS)
             ok = run_1080os(api, 1);
+        else if (to_mode == VMODE_OG4K)
+            ok = run_al_og(api, 1, 1);
+        else if (to_mode == VMODE_OG57K)
+            ok = run_al_og(api, 0, 1);
     }
 
     /* 3. Update native File Format menu labels & reload AP + CP pipeline */
@@ -920,7 +1143,7 @@ static int check_cp_reset_to_stock(const PilotApi *api, int mode) {
         return 0;
     }
 
-    if (mode == VMODE_6K) {
+    if (mode == VMODE_6K || mode == VMODE_OG4K || mode == VMODE_OG57K) {
         static const u8 idx3_4k[4] = {0x00, 0x0F, 0x70, 0x08};
         u8 cur[4] = {0};
         if (api->cp_mem->read(CP_IDX3_VA, cur, 4u) == PILOT_STATUS_OK &&
@@ -938,7 +1161,7 @@ static void *vmode_worker(void *unused) {
     const PilotApi *api = g_api;
     char line[128];
 
-    pm_emit_log(api, "VMOD_START unified=1 modes=Stock|2K_OG|6K_HS|1080p_6K_OS");
+    pm_emit_log(api, "VMOD_START unified=1 modes=Stock|2K_OG|6K_HS|1080p_6K_OS|4K_OG|5.76K_OG");
 
     /* Wait until CP output table (idx3/idx5) is initialized & /dev/pcidma ready */
     PilotStatus prc = pm_cp_wait_nonzero_u16(api, CP_IDX3_VA, 16u, 150u, 100u);
@@ -955,9 +1178,15 @@ static void *vmode_worker(void *unused) {
 
     if (init_mode != VMODE_STOCK) {
         wait_appfw_settle(api, 0u);
-        (void)switch_mode(api, VMODE_STOCK, init_mode, 1);
+        int init_ok = switch_mode(api, VMODE_STOCK, init_mode, 1);
         pthread_mutex_lock(&g_state_lock);
-        g_applied_mode = init_mode;
+        if (init_ok) {
+            g_applied_mode = init_mode;
+        } else {
+            g_desired_mode = VMODE_STOCK;
+            g_vmode_options[0].value = VMODE_STOCK;
+            save_config_mode(api, VMODE_STOCK);
+        }
         pthread_mutex_unlock(&g_state_lock);
     } else {
         pm_emit_log(api, "VMOD_INIT_STOCK config mode=0");
@@ -1007,6 +1236,10 @@ static void *vmode_worker(void *unused) {
                 ok = run_6k(api, 1);
             else if (cur == VMODE_1080OS)
                 ok = run_1080os(api, 1);
+            else if (cur == VMODE_OG4K)
+                ok = run_al_og(api, 1, 1);
+            else if (cur == VMODE_OG57K)
+                ok = run_al_og(api, 0, 1);
             if (ok) {
                 update_format_labels(cur);
                 reload_movie_pipeline(api, 1);
@@ -1019,9 +1252,15 @@ static void *vmode_worker(void *unused) {
 
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        (void)switch_mode(api, cur, target, 0);
+        int sw_ok = switch_mode(api, cur, target, 0);
         pthread_mutex_lock(&g_state_lock);
-        g_applied_mode = target;
+        if (sw_ok) {
+            g_applied_mode = target;
+        } else {
+            g_desired_mode = cur;
+            g_vmode_options[0].value = cur;
+            save_config_mode(api, cur);
+        }
         pthread_mutex_unlock(&g_state_lock);
 
         clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -1066,6 +1305,18 @@ PilotStatus pilot_module_init(const PilotApi *api) {
         const char *eap = apply_6k_ap(1);
         char emsg[96];
         snprintf(emsg, sizeof(emsg), "VMOD_EARLY_INIT mode=2 ap=%s", eap);
+        pm_emit_log(api, emsg);
+    } else if (saved == VMODE_OG4K || saved == VMODE_OG57K) {
+        u32 wm = 0, sm = 0, wa = 0, sa = 0;
+        int is_4k = (saved == VMODE_OG4K);
+        const char *eap = apply_al_libmpr_items(is_4k ? AL6K_4K_LIBMPR : AL6K_57K_LIBMPR,
+                                                is_4k ? AL6K_4K_LIBMPR_COUNT : AL6K_57K_LIBMPR_COUNT,
+                                                1, &wm, &sm);
+        const char *eav = apply_al_avcam_items(is_4k ? AL6K_4K_AVCAM : AL6K_57K_AVCAM,
+                                               is_4k ? AL6K_4K_AVCAM_COUNT : AL6K_57K_AVCAM_COUNT,
+                                               1, &wa, &sa);
+        char emsg[96];
+        snprintf(emsg, sizeof(emsg), "VMOD_EARLY_INIT mode=%d ap=%s av=%s", saved, eap, eav);
         pm_emit_log(api, emsg);
     }
 
