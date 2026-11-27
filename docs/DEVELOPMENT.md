@@ -28,12 +28,38 @@ PILOT_SYSROOT=/path/to/target/sysroot bash patch/tests/run_pilot_runtime_smoke.s
 
 通过 `PILOT_SYSROOT` 和 `PILOT_CC` 指定目标 sysroot 与交叉编译器。
 
+### AP 刷写器
+
+`patch/pilot_ap_flash.c` 是相机侧真正修改 `appFw.so`、`/usr/lib/pilot.so` 和 `/dev/nflasha5` 的程序，构建脚本会检查 AArch64 架构、`INIT` 段、无 `NEEDED`、无 `TEXTREL`，并限制在 Jiritsu 单次传输上限 64 KiB 以内：
+
+```sh
+PILOT_CC=aarch64-linux-gnu-gcc PILOT_FLASH_OUT=./pilot_ap_flash.so bash patch/build_pilot_ap_flash.sh
+```
+
+页大小固定为 4096（部分交叉工具链默认 64 KiB 段对齐，相机最小加载器不接受），模块必须无文本重定位，因此这两项在构建期直接失败，而不是等实机变砖后才发现。仓库内的 `patch/pilot_ap_flash.so` 由该脚本构建，换用其他编译器时产物字节可能不同（`.text` 等加载段一致），可用 `--writer` 指定自行构建的文件。
+
+刷写器的关键路径行为用宿主机故障注入测试覆盖，不需要相机、QEMU 或交叉工具链：源码在 `-DPILOT_FLASH_HOST_TEST` 下改用 libc 调用并暴露 `pilot_flash_run_once()`，测试通过注入 `open()`/`pwrite()`/`fsync()` 失败检查两阶段 `fsync` 屏障顺序、`pilot.so` 原子替换、`WBI2` 清零与回滚、混合窗口逐窗口回滚以及 512 字节结果文件的边界：
+
+```sh
+bash patch/tests/run_pilot_ap_flash_fault_tests.sh
+```
+
+### 离线测试
+
+```sh
+python -m unittest discover -s patch/tests -p 'test_*.py'
+python -m unittest discover -s tools/tests -p 'test_*.py'
+```
+
+`patch/tests/test_on_camera_offline.py` 校验既有安装、恢复与预检流程，`patch/tests/test_on_camera_hardening.py` 覆盖加固后的宿主机行为（写入前 `WBI2` 校验、整包 SHA-256 闸门、`--force` 收紧、混合状态收敛、`--purge`/`--full-uninstall` 零残留、512 字节结果严格解析与每会话回读重试）。两者都不访问相机，也不需要 `requirements-camera.txt` 的依赖。
+
 ## 目录
 
 | 路径 | 内容 |
 |---|---|
 | `patch/` | 框架核心、API 和 AP 相机刷写入口 |
 | `patch/cp/uipc_v4/` | CP UIPC v4 处理器源码 |
+| `patch/tests/` | 刷写入口离线测试与 AP 刷写器故障注入测试 |
 | `sdk/` | 模块开发辅助函数 |
 | `modules/` | 扩展模块源码及构建脚本 |
 | `tools/` | 补丁、模块部署和日志工具 |
