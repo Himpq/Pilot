@@ -70,12 +70,42 @@ python tools/pilot.py flash install @pilotArgs --yes
 `check` 按配置中的目标版本比对；升级前仍是旧版时，会报告 `persistent bootstrap: mismatch`。
 操作记录位于指定状态目录的 `device-state.json`，原文件备份位于其中的 `backups/`。
 
-## 3. 安装扩展模块
+## 3. 刷写 CP 固件补丁（可选，高风险）
+
+> **警告：CP 刷写直接修改相机协处理器固件 `cpapp-b.bin`，风险高于 AP 补丁与 SD 卡模块。**
+> - **适用范围**：仅限 Sony ILCE-6700 固件 2.00。刷写前必须先执行 `cp-check`，确认输出为 `CP image: original` 且完整 `sha256` 与配置一致；若状态为 `unknown` 或哈希不匹配，**切勿继续刷写**。
+> - **防变砖要求**：确保相机电池电量充足、USB 连接稳固；刷写及回读校验期间（最长约 2 分钟）**严禁断电、拔线或操作相机**。
+> - **备份与恢复**：`cp-install` 会在 `--state-dir` 下的 `cp-backups/` 保存完整的原始 `cpapp-b.bin` 备份，请妥善保留。拔出 SD 卡**不会**绕过已刷入的 CP 补丁，如需还原必须通过 USB 执行 `cp-restore`。
+> - **按需使用**：仅在需要使用 UIPC v4 批量写入等依赖 CP 代码补丁的能力时刷写；仅使用基础 Pilot 功能时可跳过本节。
+
+使用仓库内置的 `patch.a6700.json` 与 `patch/cpdelta.so`（命令中的状态目录可按本机路径调整）：
+
+```powershell
+$cpArgs = @(
+  "--map", "./patch.a6700.json",
+  "--transport-root", "./patch",
+  "--state-dir", "F:/PilotLocal/device-state"
+)
+
+# 1. 先检查当前 CP 镜像状态与 SHA-256（只读）
+python tools/pilot.py flash cp-check @cpArgs
+
+# 2. 确认状态为 original 且哈希匹配后再刷写
+python tools/pilot.py flash cp-install @cpArgs --yes
+```
+
+刷写完成后会执行整包回读校验并清理临时暂存文件，随后完整断电重启相机。如需卸载 CP 补丁并恢复原厂 `cpapp-b.bin`：
+
+```powershell
+python tools/pilot.py flash cp-restore @cpArgs --yes
+```
+
+## 4. 安装扩展模块
 
 将模块文件放入 SD 卡 `/pilot/`，并将文件名加入现有 `/pilot/modules.json` 的 `modules` 数组，保留其他条目及加载顺序。
 模块的兼容性、下载和具体使用方式以各自的发布说明为准。
 
-## 4. 日志与停用
+## 5. 日志与停用
 
 SD 卡主日志为 `/pilot/log.txt`，模块日志位于 `/pilot/modules/<模块名去掉 .so>/module.log`。
 通过读卡器导出到本机：
