@@ -1048,6 +1048,17 @@ static PilotModOptReg *find_module_opt_reg(const char *module_name)
     return NULL;
 }
 
+static PilotModDescReg *find_module_desc_reg(const char *module_name)
+{
+    if (!module_name || !module_name[0])
+        return NULL;
+    for (size_t i = 0; i < g_desc_registry_count; ++i) {
+        if (strcmp(g_desc_registry[i].module_name, module_name) == 0)
+            return &g_desc_registry[i];
+    }
+    return NULL;
+}
+
 static PilotStatus register_options_locked(const char *module_name,
                                          PilotUiOption *options,
                                          size_t option_count)
@@ -1084,17 +1095,6 @@ PilotStatus pilot_ui_register_options_v1(const char *module_name,
              module_name, option_count);
     ui_log(msg);
     return PILOT_STATUS_OK;
-}
-
-static PilotModDescReg *find_module_desc_reg(const char *module_name)
-{
-    if (!module_name || !module_name[0])
-        return NULL;
-    for (size_t i = 0; i < g_desc_registry_count; ++i) {
-        if (strcmp(g_desc_registry[i].module_name, module_name) == 0)
-            return &g_desc_registry[i];
-    }
-    return NULL;
 }
 
 __attribute__((visibility("default")))
@@ -1164,6 +1164,35 @@ PilotStatus pilot_ui_set_module_desc_v1(const char *module_name,
     return PILOT_STATUS_OK;
 }
 
+static const char *const k_opt_submenu_arrow = ">";
+#define PILOT_OPT_SUB_STACK_MAX 4u
+static PilotUiOption *g_opt_sub_opts[PILOT_OPT_SUB_STACK_MAX];
+static size_t         g_opt_sub_counts[PILOT_OPT_SUB_STACK_MAX];
+static const char    *g_opt_sub_titles[PILOT_OPT_SUB_STACK_MAX];
+static uint32_t       g_opt_sub_ret_item[PILOT_OPT_SUB_STACK_MAX];
+static size_t         g_opt_sub_mod_idx;
+static int            g_opt_sub_depth;
+
+static int active_opt_array(size_t mod_idx, PilotUiOption **out_opts, size_t *out_cnt)
+{
+    if (out_opts) *out_opts = NULL;
+    if (out_cnt)  *out_cnt  = 0u;
+    if (mod_idx >= g_mod_count)
+        return 0;
+    if (g_opt_sub_depth > 0 && g_opt_sub_mod_idx == mod_idx) {
+        int top = g_opt_sub_depth - 1;
+        if (out_opts) *out_opts = g_opt_sub_opts[top];
+        if (out_cnt)  *out_cnt  = g_opt_sub_counts[top];
+        return (g_opt_sub_opts[top] != NULL);
+    }
+    PilotModOptReg *reg = find_module_opt_reg(g_mod_names[mod_idx]);
+    if (!reg || !reg->options)
+        return 0;
+    if (out_opts) *out_opts = reg->options;
+    if (out_cnt)  *out_cnt  = reg->count;
+    return 1;
+}
+
 static void format_option_list_value(char *val_out, size_t val_cap,
                                      const PilotUiOption *opt)
 {
@@ -1171,6 +1200,13 @@ static void format_option_list_value(char *val_out, size_t val_cap,
         return;
     if (!opt) {
         val_out[0] = '\0';
+        return;
+    }
+    if (opt->kind == PILOT_UI_OPT_SUBMENU) {
+        const char *tag = (opt->action_text && opt->action_text[0])
+                              ? opt->action_text
+                              : k_opt_submenu_arrow;
+        snprintf(val_out, val_cap, "%.24s", tag);
         return;
     }
     const PilotMenuStrings *s = ui_str();
@@ -1199,46 +1235,67 @@ static const PilotUiPage *build_module_opt_list_page(void *user)
     if (mod_idx >= g_mod_count)
         return &g_pilot_root_page;
 
+    if (g_opt_sub_mod_idx != mod_idx) {
+        g_opt_sub_depth = 0;
+        g_opt_sub_mod_idx = mod_idx;
+    }
+
     const PilotMenuStrings *s = ui_str();
     g_menu_ui_options[0].label = s->lang_option_label;
     g_menu_ui_options[0].value = (int32_t)g_menu_lang;
 
-    PilotModOptReg *reg = find_module_opt_reg(g_mod_names[mod_idx]);
+    PilotUiOption *opts = NULL;
+    size_t opt_cnt = 0u;
+    (void)active_opt_array(mod_idx, &opts, &opt_cnt);
     size_t count = 0u;
 
-    /* Rows 0..opt_count-1: Module registered options (label left, value right) */
-    if (reg && reg->options) {
-        for (size_t k = 0; k < reg->count && count + 1u < PILOT_LIST_ITEMS_MAX; ++k) {
-            const char *lbl = reg->options[k].label ? reg->options[k].label : s->option_default;
+    /* Rows 0..opt_cnt-1: Active options or nested submenu entries */
+    if (opts) {
+        size_t lim = (g_opt_sub_depth == 0) ? (PILOT_LIST_ITEMS_MAX - 1u) : PILOT_LIST_ITEMS_MAX;
+        for (size_t k = 0; k < opt_cnt && count < lim; ++k) {
+            const char *lbl = opts[k].label ? opts[k].label : s->option_default;
             format_list_label_truncated(g_mod_opt_labels[mod_idx][count],
                                         sizeof(g_mod_opt_labels[mod_idx][count]),
                                         NULL, lbl, PILOT_LIST_TITLE_MAX_COLS);
-            format_option_list_value(g_mod_opt_values[mod_idx][count],
-                                     sizeof(g_mod_opt_values[mod_idx][count]),
-                                     &reg->options[k]);
-            g_mod_opt_comps[mod_idx][count] = (PilotUiComponent){
-                .kind = PILOT_UI_COMP_TOGGLE,
-                .label = g_mod_opt_labels[mod_idx][count],
-                .value = g_mod_opt_values[mod_idx][count],
-            };
+            if (opts[k].kind == PILOT_UI_OPT_SUBMENU) {
+                g_mod_opt_comps[mod_idx][count] = (PilotUiComponent){
+                    .kind = PILOT_UI_COMP_TOGGLE,
+                    .label = g_mod_opt_labels[mod_idx][count],
+                    .value = NULL,
+                };
+            } else {
+                format_option_list_value(g_mod_opt_values[mod_idx][count],
+                                         sizeof(g_mod_opt_values[mod_idx][count]),
+                                         &opts[k]);
+                g_mod_opt_comps[mod_idx][count] = (PilotUiComponent){
+                    .kind = PILOT_UI_COMP_TOGGLE,
+                    .label = g_mod_opt_labels[mod_idx][count],
+                    .value = g_mod_opt_values[mod_idx][count],
+                };
+            }
             ++count;
         }
     }
 
-    /* Last row: Module Info & Enable Switch (opens 0x1C3 detail page) */
-    snprintf(g_mod_opt_labels[mod_idx][count],
-             sizeof(g_mod_opt_labels[mod_idx][count]),
-             "%s", s->module_info_switch);
-    g_mod_opt_comps[mod_idx][count] = (PilotUiComponent){
-        .kind = PILOT_UI_COMP_SUBMENU,
-        .label = g_mod_opt_labels[mod_idx][count],
-        .value = g_mod_enabled[mod_idx] ? s->toggle_on : s->toggle_off,
-        .target_page = &g_modules_detail_pages[mod_idx],
-    };
-    ++count;
+    /* At module top level (depth 0), append Module Info & Enable Switch */
+    if (g_opt_sub_depth == 0 && count < PILOT_LIST_ITEMS_MAX) {
+        snprintf(g_mod_opt_labels[mod_idx][count],
+                 sizeof(g_mod_opt_labels[mod_idx][count]),
+                 "%s", s->module_info_switch);
+        g_mod_opt_comps[mod_idx][count] = (PilotUiComponent){
+            .kind = PILOT_UI_COMP_SUBMENU,
+            .label = g_mod_opt_labels[mod_idx][count],
+            .value = g_mod_enabled[mod_idx] ? s->toggle_on : s->toggle_off,
+            .target_page = &g_modules_detail_pages[mod_idx],
+        };
+        ++count;
+    }
 
     g_mod_opt_pages[mod_idx].kind = PILOT_UI_PAGE_LIST;
-    g_mod_opt_pages[mod_idx].title = g_mod_titles[mod_idx];
+    g_mod_opt_pages[mod_idx].title =
+        (g_opt_sub_depth > 0 && g_opt_sub_titles[g_opt_sub_depth - 1])
+            ? g_opt_sub_titles[g_opt_sub_depth - 1]
+            : g_mod_titles[mod_idx];
     g_mod_opt_pages[mod_idx].components = g_mod_opt_comps[mod_idx];
     g_mod_opt_pages[mod_idx].component_count = count;
     g_mod_opt_pages[mod_idx].user_data = (void *)(uintptr_t)mod_idx;
@@ -2002,6 +2059,7 @@ static void reset_pilot_293_state(void)
 {
     pilot_clear_list_return();
     g_page_stack_depth = 0;
+    g_opt_sub_depth = 0;
     g_active_page = &g_pilot_root_page;
     g_pending_list_page = NULL;
     g_active_293_view = NULL;
@@ -2038,6 +2096,28 @@ static int is_pilot_item_id(uint32_t id)
  * generic_open dispatches the per-view model *(ctrl+0x11b28) which presents the
  * sid through the page table — i.e. exactly our already-hooked 0x1c3/0x293
  * factories render.  Foreign (non-Pilot) ids still pass through to native. */
+static int pilot_reopen_opt_page(void *ctrl, size_t mod_idx, uint32_t focus_item)
+{
+    if (!ctrl || !g_appfw_base || mod_idx >= g_mod_count)
+        return 0;
+    generic_open_fn go =
+        (generic_open_fn)(g_appfw_base + APPFW_293_GENERIC_OPEN_OFF);
+    if (!go)
+        return 0;
+
+    g_pending_list_page = &g_mod_opt_pages[mod_idx];
+    g_page_stack_depth = 1;
+    g_return_list_page = &g_mod_opt_pages[mod_idx];
+    g_return_list_item = focus_item;
+    g_return_list_pending = 1;
+
+    uint32_t a[4] = { PILOT_LIST_SCREEN_ID, 0u, 0u, 0u };
+    uint32_t b[4] = { PILOT_GENERIC_OPEN_SKIP, 0u, 0u, 0u };
+    uint32_t c[4] = { PILOT_GENERIC_OPEN_SKIP, 0u, 0u, 0u };
+    go(ctrl, a, b, c);
+    return 1;
+}
+
 static int pilot_pop_to_root_list(void *ctrl)
 {
     if (!ctrl || !g_appfw_base)
@@ -2047,6 +2127,7 @@ static int pilot_pop_to_root_list(void *ctrl)
     if (!go)
         return 0;
 
+    g_opt_sub_depth = 0;
     g_pending_list_page = &g_pilot_root_page;
     g_page_stack_depth = 0;
     g_return_list_page = &g_pilot_root_page;
@@ -2068,10 +2149,11 @@ static void pilot_2a7_apply_selection(uint32_t choice_index)
     if (mod_idx >= g_mod_count)
         return;
 
-    PilotModOptReg *reg = find_module_opt_reg(g_mod_names[mod_idx]);
-    if (!reg || !reg->options || row_idx >= reg->count)
+    PilotUiOption *opts = NULL;
+    size_t opt_cnt = 0u;
+    if (!active_opt_array(mod_idx, &opts, &opt_cnt) || row_idx >= opt_cnt)
         return;
-    PilotUiOption *opt = &reg->options[row_idx];
+    PilotUiOption *opt = &opts[row_idx];
     if (opt->kind == PILOT_UI_OPT_BOOL) {
         opt->value = (choice_index == 0u) ? 1 : 0;
     } else if (opt->kind == PILOT_UI_OPT_ENUM && choice_index < opt->choice_count) {
@@ -2143,10 +2225,23 @@ static int pilot_handle_opt_list_click(void *ctrl, size_t row_idx)
     const PilotMenuStrings *s = ui_str();
     const char *on_off_choices[2] = { s->toggle_on, s->toggle_off };
 
-    PilotModOptReg *reg = find_module_opt_reg(g_mod_names[mod_idx]);
-    if (!reg || !reg->options || row_idx >= reg->count)
+    PilotUiOption *opts = NULL;
+    size_t opt_cnt = 0u;
+    if (!active_opt_array(mod_idx, &opts, &opt_cnt) || row_idx >= opt_cnt)
         return 1;
-    PilotUiOption *opt = &reg->options[row_idx];
+    PilotUiOption *opt = &opts[row_idx];
+    if (opt->kind == PILOT_UI_OPT_SUBMENU && opt->sub_options && opt->sub_count > 0u) {
+        if (g_opt_sub_depth < (int)PILOT_OPT_SUB_STACK_MAX) {
+            g_opt_sub_mod_idx = mod_idx;
+            g_opt_sub_opts[g_opt_sub_depth] = opt->sub_options;
+            g_opt_sub_counts[g_opt_sub_depth] = opt->sub_count;
+            g_opt_sub_titles[g_opt_sub_depth] = opt->label ? opt->label : "Submenu";
+            g_opt_sub_ret_item[g_opt_sub_depth] = PILOT_ITEM_ID_BASE + (uint32_t)row_idx;
+            ++g_opt_sub_depth;
+            (void)pilot_reopen_opt_page(ctrl, mod_idx, PILOT_ITEM_ID_BASE);
+        }
+        return 1;
+    }
     if (opt->kind == PILOT_UI_OPT_BOOL) {
         uint32_t cur = opt->value ? 0u : 1u;
         if (pilot_open_2a7_picker(ctrl, mod_idx, row_idx,
@@ -2411,6 +2506,16 @@ static uint32_t pilot_btn_back_common(void *ctrl, void *ev,
     ui_log(msg);
     if (g_in_pilot_293 && !g_pilot_detail_active && g_page_stack_depth > 0 &&
         pilot_current_group()) {
+        if (g_opt_sub_depth > 0) {
+            --g_opt_sub_depth;
+            if (pilot_reopen_opt_page(ctrl, g_opt_sub_mod_idx,
+                                      g_opt_sub_ret_item[g_opt_sub_depth])) {
+                snprintf(msg, sizeof(msg), "PILOT_UI_DBG %s popped_sub depth=%d",
+                         tag, g_opt_sub_depth);
+                ui_log(msg);
+                return 1u;
+            }
+        }
         if (pilot_pop_to_root_list(ctrl)) {
             snprintf(msg, sizeof(msg), "PILOT_UI_DBG %s popped_to_root", tag);
             ui_log(msg);

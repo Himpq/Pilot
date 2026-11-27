@@ -17,19 +17,25 @@ static void *worker(void *arg)
 {
     (void)arg;
     canvas_scope_widget_init();
+    canvas_focal_widget_init();
+    canvas_status_widget_init();
     canvas_config_load();
     (void)pilot_canvas_probe_v1();
     (void)canvas_install_touch_hook();
     (void)canvas_install_disp_hook();
     (void)canvas_install_frame_hook();
 
-    /* Sample focal length at ~30 Hz (33ms, 1x 4B DMA) and live OPD 2D RGBY
-     * scope at ~10 Hz (100ms, 3x 4KB DMA); flush debounced layout.cfg saves. */
+    /* Sample focal length at ~30 Hz (33ms, 1x 4B DMA), live OPD 2D RGBY
+     * scope at ~10 Hz (100ms, 3x 4KB DMA), and UPM telemetry at ~1 Hz
+     * (1x 576B DMA); flush debounced layout.cfg saves. */
     u32 tick = 0u;
     for (;;) {
         canvas_scope_widget_tick_label();
+        canvas_focal_widget_tick();
         if ((tick % 3u) == 0u)
             canvas_scope_widget_tick_opd();
+        if ((tick % 30u) == 0u)
+            canvas_status_widget_tick();
         canvas_config_flush_if_dirty();
         ++tick;
         struct timespec ts = { 0, 33000000l };

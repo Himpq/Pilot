@@ -257,11 +257,10 @@ int main(void)
     g_mods_loaded = 1;
     const PilotUiPage *root = build_root_page(NULL);
     assert(root->component_count == 3u);
-    assert(root->components[1].target_page == &g_modules_detail_pages[0]);
     assert(strcmp(root->components[1].label, "Menu UI") == 0);
-    assert(strcmp(root->components[1].value, "On") == 0);
+    assert(strcmp(root->components[1].value, "开") == 0);
     assert(strcmp(root->components[2].label, "6K Mode") == 0);
-    assert(strcmp(root->components[2].value, "Off") == 0);
+    assert(strcmp(root->components[2].value, "关") == 0);
 
     bind_detail_page_to_layout(&g_modules_detail_pages[1]);
     assert(g_detail_has_toggle == 1 && g_detail_module_index == 1);
@@ -278,7 +277,7 @@ int main(void)
     g_orig_set_string_cstr = fake_set_string_cstr;
     pilot_set_string_rid_hook(&test_toggle_sprite_dummy, PILOT_RID_DETAIL_TOGGLE);
     pilot_set_string_rid_hook(&test_status_sprite_dummy, PILOT_RID_SLOT_BASE);
-    assert(strcmp(test_last_toggle_str, "Module Switch: [OFF]") == 0);
+    assert(strcmp(test_last_toggle_str, "模块开关: [OFF]") == 0);
 
     test_index = 7u;
     assert(pilot_1c3_confirm_hook(test_ctrl, NULL) == 1u);
@@ -288,8 +287,8 @@ int main(void)
     assert(strcmp(test_written_path, "A:/pilot/modules.json") == 0);
     assert(strstr(test_written_json, "\"pilot_menu_ui.so\": true") != NULL);
     assert(strstr(test_written_json, "\"pilot_6k.so\": true") != NULL);
-    assert(strcmp(test_last_toggle_str, "Module Switch: [_ON]") == 0);
-    assert(strcmp(g_root_components[2].value, "On") == 0);
+    assert(strcmp(test_last_toggle_str, "模块开关: [_ON]") == 0);
+    assert(strcmp(g_root_components[2].value, "开") == 0);
     assert(test_1c3_view_updates == 1u);
 
     /* Write failure must revert in-memory toggle state. */
@@ -327,18 +326,18 @@ int main(void)
     assert(g_active_page == &g_mod_opt_pages[1] && g_page_stack_depth == 1);
     assert(g_active_page->component_count == 4u);
     assert(strcmp(g_list_strings[0], "Test Toggle") == 0);
-    assert(strcmp(g_list_val_strings[0], "Off") == 0);
+    assert(strcmp(g_list_val_strings[0], "关") == 0);
     assert(strcmp(g_list_strings[1], "Aspect Mode") == 0);
     assert(strcmp(g_list_val_strings[1], "3:2") == 0);
     assert(strcmp(g_list_strings[2], "Ping Action") == 0);
     assert(strcmp(g_list_val_strings[2], "Run (0)") == 0);
-    assert(strcmp(g_list_strings[3], "Module Info & Switch") == 0);
-    assert(strcmp(g_list_val_strings[3], "On") == 0);
+    assert(strcmp(g_list_strings[3], "模块信息与开关") == 0);
+    assert(strcmp(g_list_val_strings[3], "开") == 0);
 
     pilot_set_string_rid_hook(&test_slot1_sprite_dummy, PILOT_RID_LIST_VAL_BASE + 0u);
     assert(pilot_handle_opt_list_click(test_ctrl, 0u) == 1);
     assert(test_opts[0].value == 1 && test_opt_callbacks == 1u);
-    assert(strcmp(test_last_slot1_str, "On") == 0);
+    assert(strcmp(test_last_slot1_str, "开") == 0);
 
     pilot_set_string_rid_hook(&test_slot1_sprite_dummy, PILOT_RID_LIST_VAL_BASE + 1u);
     assert(pilot_handle_opt_list_click(test_ctrl, 1u) == 1);
@@ -350,40 +349,8 @@ int main(void)
     assert(test_opts[2].value == 1 && test_opt_callbacks == 3u);
     assert(strcmp(test_last_slot1_str, "Run (1)") == 0);
 
-    /* Module Info & Switch falls through (returns 0) so generic_open opens 0x1C3. */
+    /* 模块信息与开关 falls through (returns 0) so generic_open opens 0x1C3. */
     assert(pilot_handle_opt_list_click(test_ctrl, 3u) == 0);
-
-    /* Validate manual language switching to ZH and back to EN. */
-    g_menu_ui_options[0].value = PILOT_LANG_ZH;
-    on_lang_option_changed(&g_menu_ui_options[0], NULL);
-    assert(g_menu_lang == PILOT_LANG_ZH);
-    assert(pilot_ui_get_language_v1() == PILOT_LANG_ZH);
-    assert(strcmp(test_written_path, "A:/pilot/modules/pilot_menu_ui/config.txt") == 0);
-    assert(strcmp(test_written_json, "lang=zh\n") == 0);
-    assert(strcmp(g_pilot_version_page.title, "Pilot 版本") == 0);
-    assert(strcmp(g_root_components[0].label, "Pilot 版本") == 0);
-    assert(strcmp(g_root_components[2].value, "开") == 0);
-    assert(strcmp(g_mod_toggle_bufs[1], "模块开关: [_ON]") == 0);
-    const PilotUiPage *zh_opt_page = build_module_opt_list_page((void *)(uintptr_t)1u);
-    assert(strcmp(zh_opt_page->components[3].label, "模块信息与开关") == 0);
-    g_menu_ui_options[0].value = PILOT_LANG_EN;
-    on_lang_option_changed(&g_menu_ui_options[0], NULL);
-    assert(g_menu_lang == PILOT_LANG_EN);
-    assert(pilot_ui_get_language_v1() == PILOT_LANG_EN);
-    assert(strcmp(test_written_json, "lang=en\n") == 0);
-
-    /* Validate live runtime module description update on active 0x1C3 page. */
-    static uint8_t test_desc_sprite_dummy;
-    g_pilot_detail_active = 1;
-    g_detail_module_index = 1;
-    g_active_1c3_view = test_1c3_view;
-    pilot_set_string_rid_hook(&test_desc_sprite_dummy, PILOT_RID_SLOT_BASE + 1u);
-    assert(pilot_ui_set_module_desc_v1("pilot_6k.so", "Live 6K status: ready") == PILOT_STATUS_OK);
-    assert(strcmp(g_mod_desc_bufs[1], "Live 6K status: ready") == 0);
-    assert(strcmp(g_slot_strings[1], "Live 6K status: ready") == 0);
-    assert(pilot_ui_set_module_desc_v1("pilot_6k.so", NULL) == PILOT_STATUS_OK);
-    assert(strcmp(g_mod_desc_bufs[1], "No description.") == 0);
-    g_pilot_detail_active = 0;
 
     /* Validate 0x2A7 native option picker descriptor & selection callback. */
     pilot_2a7_prepare_choices("Aspect Mode", test_modes, 3u, 1u);

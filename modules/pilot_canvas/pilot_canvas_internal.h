@@ -186,15 +186,18 @@ typedef struct {
 
 PilotPanel *canvas_panel_register(const PilotPanelDesc *desc);
 void        canvas_panel_invalidate(PilotPanel *panel, int sync_ui);
+void        canvas_flush_dirty_panels_ui(void);
 void        canvas_panel_get_pos(PilotPanel *panel, int *x, int *y);
 void       *canvas_panel_user_data(PilotPanel *panel);
 int         canvas_panel_any_attached(void);
 int         canvas_panel_get_attached_widgets(void *out_widgets[PILOT_DISPLAY_COUNT]);
 int         canvas_pilot_page_visible(void);
-void        canvas_set_lock_pos(int locked);
+void        canvas_panel_set_locked(PilotPanel *panel, int locked);
+void        canvas_panel_set_hit_size(PilotPanel *panel, int w, int h);
 void        canvas_set_always_on(int always_on);
 
 void canvas_config_mark_dirty(void);
+void canvas_config_mark_dirty_now(void);
 void canvas_config_load(void);
 void canvas_config_flush_if_dirty(void);
 
@@ -226,12 +229,52 @@ typedef struct {
 } PilotOpdFrame;
 
 int canvas_cp_read_opd(PilotOpdFrame *out, int gamma_mode, int wb_enable);
+int canvas_cp_read_focal_mm10_zpos(u32 *out_mm10, u16 *out_zpos);
+int canvas_cp_read_focal_mm10(u32 *out_mm10);
 int canvas_cp_read_focal_mm(char *out, size_t out_sz);
 int canvas_cp_read_sync_geom(char *out, size_t out_sz);
+
+typedef struct {
+    int valid;
+    int16_t cmos_c10;   /* CMOS imager temp in 0.1 C, -999 if invalid */
+    int16_t body_c10;   /* Max body/mainboard NTC temp in 0.1 C, -999 if invalid */
+    int16_t batt_c10;   /* InfoLITHIUM battery temp in 0.1 C, -999 if invalid */
+    int16_t batt_pct;   /* Battery remaining % (0..100), -1 if unknown */
+    u16     ext_mv;     /* USB-PD / external supply voltage in mV (0 if battery only) */
+    u16     ext_ma;     /* USB-PD / external supply current in mA */
+} PilotTelemetry;
+
+int canvas_cp_read_telemetry(PilotTelemetry *out);
 
 /* ---- Live View Scope widget (canvas_scope_widget.c) --------------------- */
 void canvas_scope_widget_init(void);
 void canvas_scope_widget_tick_label(void);
 void canvas_scope_widget_tick_opd(void);
+
+/* ---- Standalone Focal Bar widget (canvas_focal_widget.c) ---------------- */
+enum {
+    FOCAL_MODE_OFF    = 0,
+    FOCAL_MODE_AUTO2S = 1,
+    FOCAL_MODE_ALWAYS = 2,
+    FOCAL_MODE_COUNT  = 3
+};
+
+void canvas_focal_widget_init(void);
+void canvas_focal_widget_set_mode(int mode, int invalidate);
+int  canvas_focal_widget_get_mode(void);
+void canvas_focal_widget_set_locked(int locked);
+int  canvas_focal_widget_is_locked(void);
+void canvas_focal_widget_reset_range(void);
+void canvas_focal_widget_tick(void);
+
+/* ---- Standalone Telemetry Status Bar (canvas_status_widget.c) ----------- */
+void canvas_status_widget_init(void);
+void canvas_status_widget_set_enabled(int enabled, int invalidate);
+int  canvas_status_widget_is_enabled(void);
+void canvas_status_widget_set_size(int size_idx, int invalidate);
+int  canvas_status_widget_get_size(void);
+void canvas_status_widget_set_locked(int locked);
+int  canvas_status_widget_is_locked(void);
+void canvas_status_widget_tick(void);
 
 #endif

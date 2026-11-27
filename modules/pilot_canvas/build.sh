@@ -17,6 +17,8 @@ SRCS=(
     canvas_panel.c
     canvas_cp_sensors.c
     canvas_scope_widget.c
+    canvas_focal_widget.c
+    canvas_status_widget.c
 )
 
 mkdir -p "$(dirname "$OUT")"

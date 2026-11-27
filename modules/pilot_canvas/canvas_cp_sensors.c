@@ -416,36 +416,56 @@ static u32 sony_dec16_to_mm10(u16 v)
     }
 }
 
-int canvas_cp_read_focal_mm(char *out, size_t out_sz)
+int canvas_cp_read_focal_mm10_zpos(u32 *out_mm10, u16 *out_zpos)
 {
-    if (!out || out_sz < 8u || !g_api || !g_api->cp_mem || !g_api->cp_mem->read)
+    if (!out_mm10 || !g_api || !g_api->cp_mem || !g_api->cp_mem->read)
         return 0;
-    out[0] = '\0';
 
-    u8 fbuf[4] = {0};
+    u8 fbuf[6] = {0};
     if (g_api->cp_mem->read(CP_LENS_INFO_BASE_VA + 0x11Eull, fbuf, sizeof(fbuf)) !=
         PILOT_STATUS_OK)
         return 0;
 
     u16 eq35 = rd_u16(fbuf, 0u);
     u16 act  = rd_u16(fbuf, 2u);
+    u16 zpos = rd_u16(fbuf, 4u); /* ZoomRingPosition (+0x122) */
     u32 mm10 = sony_dec16_to_mm10(act);
 
     static int s_focal_logged;
     if (!s_focal_logged && mm10 > 0u) {
         s_focal_logged = 1;
-        mlogf("CANVAS_FOCAL_INIT act=0x%04x eq35=0x%04x mm10=%u",
-              (unsigned)act, (unsigned)eq35, mm10);
+        mlogf("CANVAS_FOCAL_INIT act=0x%04x eq35=0x%04x zpos=0x%04x mm10=%u",
+              (unsigned)act, (unsigned)eq35, (unsigned)zpos, mm10);
     }
 
     if (mm10 > 0u && mm10 <= 20000u) {
-        if ((mm10 % 10u) == 0u)
-            snprintf(out, out_sz, "%umm", mm10 / 10u);
-        else
-            snprintf(out, out_sz, "%u.%umm", mm10 / 10u, mm10 % 10u);
+        *out_mm10 = mm10;
+        if (out_zpos)
+            *out_zpos = zpos;
         return 1;
     }
     return 0;
+}
+
+int canvas_cp_read_focal_mm10(u32 *out_mm10)
+{
+    return canvas_cp_read_focal_mm10_zpos(out_mm10, NULL);
+}
+
+int canvas_cp_read_focal_mm(char *out, size_t out_sz)
+{
+    if (!out || out_sz < 8u)
+        return 0;
+    out[0] = '\0';
+
+    u32 mm10 = 0u;
+    if (!canvas_cp_read_focal_mm10(&mm10))
+        return 0;
+    if ((mm10 % 10u) == 0u)
+        snprintf(out, out_sz, "%umm", mm10 / 10u);
+    else
+        snprintf(out, out_sz, "%u.%umm", mm10 / 10u, mm10 % 10u);
+    return 1;
 }
 
 int canvas_cp_read_sync_geom(char *out, size_t out_sz)
@@ -471,4 +491,92 @@ int canvas_cp_read_sync_geom(char *out, size_t out_sz)
     else
         snprintf(out, out_sz, "[%04x]", mode & 0xFFFFu);
     return 1;
+}
+
+/* Verified live on A6700 2.00 CP RAM (0x011C6964, UPM global telemetry block):
+ *   +0x01C (u16): USB-PD / external supply voltage in mV
+ *   +0x01E (u16): USB-PD / external supply current in mA
+ *   +0x038 (u16): InfoLITHIUM battery remaining % (0..100)
+ *   +0x152..+0x208: 19-entry x 10B thermal sensor table:
+ *       entry 2 (+0x166 raw_ad, +0x168 halfC = (C+20)*2): CMOS Imager temp
+ *       entries 0/1/3/6/8 (+0x152/+0x15C/+0x170/+0x18E/+0x1A2): body NTC AD
+ *       entry 9 (+0x1AE halfC = (C+20)*2): InfoLITHIUM battery temp */
+#define CP_UPM_TELEM_VA   0x011C6964ull
+#define CP_UPM_TELEM_LEN  0x240u
+
+static int16_t ntc_ad_to_c10(u16 ad)
+{
+    /* Sony Imager/body 10k B=3380K NTC (Vref=3.1V, 10-bit max=1023, Rpu=4.7k):
+     * LUT for AD = 100..940 step 40 in 0.1 C units. */
+    static const int16_t lut[22] = {
+        1312, 1136, 1008, 908, 825, 752, 688, 630,
+         576,  525,  476, 429, 383, 338, 292, 245,
+         197,  146,   90,  29, -43, -133
+    };
+    if (ad < 100u || ad > 940u)
+        return -999;
+    u32 idx = (u32)(ad - 100u) / 40u;
+    u32 rem = (u32)(ad - 100u) % 40u;
+    if (idx >= 21u)
+        return lut[21];
+    int32_t v0 = lut[idx];
+    int32_t v1 = lut[idx + 1u];
+    return (int16_t)(v0 + ((v1 - v0) * (int32_t)rem) / 40);
+}
+
+int canvas_cp_read_telemetry(PilotTelemetry *out)
+{
+    if (!out)
+        return 0;
+    memset(out, 0, sizeof(*out));
+    out->cmos_c10 = -999;
+    out->body_c10 = -999;
+    out->batt_c10 = -999;
+    out->batt_pct = -1;
+
+    if (!g_api || !g_api->cp_mem || !g_api->cp_mem->read)
+        return 0;
+
+    u8 blk[CP_UPM_TELEM_LEN];
+    if (g_api->cp_mem->read(CP_UPM_TELEM_VA, blk, sizeof(blk)) != PILOT_STATUS_OK)
+        return 0;
+
+    /* Battery % (+0x038) and USB-PD supply (+0x01C / +0x01E) */
+    u16 pct = rd_u16(blk, 0x038u);
+    if (pct <= 100u)
+        out->batt_pct = (int16_t)pct;
+
+    out->ext_mv = rd_u16(blk, 0x01Cu);
+    out->ext_ma = rd_u16(blk, 0x01Eu);
+
+    /* CMOS Imager temp: prefer ImCheckThermal 0.5C unit at +0x168, else NTC AD at +0x166 */
+    u16 cmos_half = rd_u16(blk, 0x168u);
+    if (cmos_half != 0xFFFFu && cmos_half <= 300u) {
+        out->cmos_c10 = (int16_t)((int)cmos_half * 5 - 200);
+    } else {
+        u16 cmos_ad = rd_u16(blk, 0x166u);
+        if (cmos_ad >= 100u && cmos_ad <= 940u)
+            out->cmos_c10 = ntc_ad_to_c10(cmos_ad);
+    }
+
+    /* Max body/board NTC temp across entries 0, 1, 3, 6, 8 */
+    static const u16 body_offs[5] = { 0x152u, 0x15Cu, 0x170u, 0x18Eu, 0x1A2u };
+    int16_t max_body = -999;
+    for (u32 i = 0u; i < 5u; ++i) {
+        u16 ad = rd_u16(blk, body_offs[i]);
+        if (ad >= 100u && ad <= 940u) {
+            int16_t t = ntc_ad_to_c10(ad);
+            if (t > max_body)
+                max_body = t;
+        }
+    }
+    out->body_c10 = max_body;
+
+    /* InfoLITHIUM battery temp at entry 9 (+0x1AE) */
+    u16 batt_half = rd_u16(blk, 0x1AEu);
+    if (batt_half != 0xFFFFu && batt_half <= 300u)
+        out->batt_c10 = (int16_t)((int)batt_half * 5 - 200);
+
+    out->valid = (out->cmos_c10 > -900 || out->body_c10 > -900 || out->batt_pct >= 0);
+    return out->valid;
 }

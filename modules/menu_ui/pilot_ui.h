@@ -114,15 +114,22 @@ static inline PilotStatus pilot_ui_clear_text(void)
 typedef enum {
     PILOT_UI_OPT_BOOL = 0,
     PILOT_UI_OPT_ENUM = 1,
-    PILOT_UI_OPT_ACTION = 2
+    PILOT_UI_OPT_ACTION = 2,
+    PILOT_UI_OPT_SUBMENU = 3
 } PilotUiOptionKind;
 
 typedef struct PilotUiOption {
     const char *label;
     PilotUiOptionKind kind;
     int32_t value;
-    const char *const *choices;
-    size_t choice_count;
+    union {
+        const char *const *choices;
+        struct PilotUiOption *sub_options;
+    };
+    union {
+        size_t choice_count;
+        size_t sub_count;
+    };
     const char *action_text;
     void (*on_change)(struct PilotUiOption *opt, void *user);
     void *user;

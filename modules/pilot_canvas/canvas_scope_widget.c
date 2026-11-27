@@ -14,10 +14,14 @@
 #include "pilot_ui.h"
 #include "localization.h"
 
-#define SCOPE_PANEL_W 268
-#define SCOPE_PANEL_H 136
+#define SCOPE_PANEL_W 336
+#define SCOPE_PANEL_H 170
 #define SCOPE_DEF_X   364
 #define SCOPE_DEF_Y   276
+
+static const int k_scope_w[3] = { 196, 268, 336 };
+static const int k_scope_h[3] = { 100, 136, 170 };
+static const char *const k_size_choices[3] = { "小", "中", "大" };
 
 typedef enum {
     SCOPE_MODE_RGB_PARADE = 0,
@@ -33,7 +37,7 @@ static const char *const k_mode_titles[SCOPE_MODE_COUNT] = {
 };
 
 static const char *const k_mode_choices[SCOPE_MODE_COUNT] = {
-    "RGB Parade", "White Wave", "RGB Wave", "RGB Hist", "Off"
+    "RGB 分量", "亮度波形", "RGB 波形", "RGB 直方图", "关闭"
 };
 
 static const char *const k_gamma_choices[SCOPE_GAMMA_COUNT] = {
@@ -41,7 +45,7 @@ static const char *const k_gamma_choices[SCOPE_GAMMA_COUNT] = {
 };
 
 static const char *const k_wb_choices[2] = {
-    "Off", "Auto"
+    "关", "自动"
 };
 
 enum {
@@ -52,27 +56,32 @@ enum {
 };
 
 static const char *const k_fc_choices[FC_MODE_COUNT] = {
-    "Off", "Key Zones", "Full ARRI"
+    "关闭", "关键曝光区", "ARRI 全彩"
 };
 
 static const char *const k_disp_choices[2] = {
-    "Off (Always)", "On"
+    "常驻显示", "独立 DISP 页"
 };
 
 static const char *const k_lock_choices[2] = {
-    "Off", "Locked"
+    "关", "锁定"
+};
+
+static const char *const k_focal_choices[FOCAL_MODE_COUNT] = {
+    "关闭", "变焦弹出 2秒", "始终显示"
 };
 
 static PilotPanel *g_fc_panel;
 static PilotPanel *g_scope_panel;
 static pthread_mutex_t g_scope_lock = PTHREAD_MUTEX_INITIALIZER;
 static PilotOpdFrame g_scope_frame;
-static int g_scope_mode  = SCOPE_MODE_RGB_WAVE;
-static int g_scope_gamma = SCOPE_GAMMA_REC709;
+static int g_scope_mode   = SCOPE_MODE_RGB_WAVE;
+static int g_scope_size   = 1; /* 0=Small(196x100), 1=Medium(268x136), 2=Large(336x170) */
+static int g_scope_gamma  = SCOPE_GAMMA_REC709;
 static int g_scope_wb    = 1;
 static int g_fc_mode     = FC_MODE_OFF;
 static int g_disp_sep    = 1; /* 1 = independent DISP page, 0 = Always On in LV */
-static int g_lock_pos    = 0; /* 1 = fixed position (no dragging) */
+static int g_scope_locked = 0; /* 1 = Scope fixed position (no dragging) */
 static char g_scope_tail[20];
 static char g_scope_meta[32] = "709";
 
@@ -88,22 +97,28 @@ static void scope_rebuild_meta_locked(void)
 /* Draw sleek dark card header (scale=2 bold text), horizontal divider,
  * Y-axis 100/50/0 IRE labels (scale=2), and fine graticule lines. */
 static void scope_draw_chrome(PilotCanvas *c, const char *title, const char *meta,
+                              int card_w, int card_h, int txt_scale,
                               int pad_l, int pad_t, int uw, int uh,
                               int v_divs, int show_ire_labels)
 {
-    pilot_canvas_fill_rect_v1(c, 0, 0, (int)c->w, (int)c->h,
+    pilot_canvas_fill_rect_v1(c, 0, 0, card_w, card_h,
                               0xB806080Au, PILOT_CANVAS_BLEND_NONE);
-    pilot_canvas_fill_rect_v1(c, 0, 0, (int)c->w, 1, 0x70505860u, PILOT_CANVAS_BLEND_NONE);
-    pilot_canvas_fill_rect_v1(c, 0, (int)c->h - 1, (int)c->w, 1, 0x70505860u, PILOT_CANVAS_BLEND_NONE);
-    pilot_canvas_fill_rect_v1(c, 0, 0, 1, (int)c->h, 0x70505860u, PILOT_CANVAS_BLEND_NONE);
-    pilot_canvas_fill_rect_v1(c, (int)c->w - 1, 0, 1, (int)c->h, 0x70505860u, PILOT_CANVAS_BLEND_NONE);
+    pilot_canvas_fill_rect_v1(c, 0, 0, card_w, 1, 0x70505860u, PILOT_CANVAS_BLEND_NONE);
+    pilot_canvas_fill_rect_v1(c, 0, card_h - 1, card_w, 1, 0x70505860u, PILOT_CANVAS_BLEND_NONE);
+    pilot_canvas_fill_rect_v1(c, 0, 0, 1, card_h, 0x70505860u, PILOT_CANVAS_BLEND_NONE);
+    pilot_canvas_fill_rect_v1(c, card_w - 1, 0, 1, card_h, 0x70505860u, PILOT_CANVAS_BLEND_NONE);
 
-    pilot_canvas_draw_osd_text_v1(c, 8, 4, 2, 0xFFFFFFFFu, 0x00000000u, title);
+    int hdr_x = (txt_scale == 1) ? 6 : 8;
+    int hdr_y = 4;
+    int div_y = (txt_scale == 1) ? 14 : 22;
+    int adv   = 6 * txt_scale;
+    pilot_canvas_draw_osd_text_v1(c, hdr_x, hdr_y, txt_scale, 0xFFFFFFFFu, 0x00000000u, title);
     int meta_len = (int)strlen(meta);
-    int meta_x = (int)c->w - 8 - meta_len * 12;
-    if (meta_x < 92) meta_x = 92;
-    pilot_canvas_draw_osd_text_v1(c, meta_x, 4, 2, 0xD8C0D0E0u, 0x00000000u, meta);
-    pilot_canvas_fill_rect_v1(c, 8, 22, (int)c->w - 16, 1, 0x78606870u, PILOT_CANVAS_BLEND_NONE);
+    int meta_x = card_w - hdr_x - meta_len * adv;
+    int min_meta_x = hdr_x + (int)strlen(title) * adv + 6;
+    if (meta_x < min_meta_x) meta_x = min_meta_x;
+    pilot_canvas_draw_osd_text_v1(c, meta_x, hdr_y, txt_scale, 0xD8C0D0E0u, 0x00000000u, meta);
+    pilot_canvas_fill_rect_v1(c, hdr_x, div_y, card_w - hdr_x * 2, 1, 0x78606870u, PILOT_CANVAS_BLEND_NONE);
 
     /* 5 horizontal grid lines (100%, 75%, 50%, 25%, 0%) */
     for (int i = 0; i <= 4; ++i) {
@@ -128,9 +143,15 @@ static void scope_draw_chrome(PilotCanvas *c, const char *title, const char *met
     }
 
     if (show_ire_labels) {
-        pilot_canvas_draw_osd_text_v1(c, 4, pad_t - 4, 2, 0xD8C0C8D0u, 0x00000000u, "100");
-        pilot_canvas_draw_osd_text_v1(c, 14, pad_t + uh / 2 - 7, 2, 0xD8C0C8D0u, 0x00000000u, "50");
-        pilot_canvas_draw_osd_text_v1(c, 26, pad_t + uh - 12, 2, 0xD8C0C8D0u, 0x00000000u, "0");
+        if (txt_scale == 1) {
+            pilot_canvas_draw_osd_text_v1(c, 3,  pad_t - 2,          1, 0xD8C0C8D0u, 0x00000000u, "100");
+            pilot_canvas_draw_osd_text_v1(c, 8,  pad_t + uh / 2 - 3, 1, 0xD8C0C8D0u, 0x00000000u, "50");
+            pilot_canvas_draw_osd_text_v1(c, 14, pad_t + uh - 6,     1, 0xD8C0C8D0u, 0x00000000u, "0");
+        } else {
+            pilot_canvas_draw_osd_text_v1(c, 4,  pad_t - 4,          2, 0xD8C0C8D0u, 0x00000000u, "100");
+            pilot_canvas_draw_osd_text_v1(c, 14, pad_t + uh / 2 - 7, 2, 0xD8C0C8D0u, 0x00000000u, "50");
+            pilot_canvas_draw_osd_text_v1(c, 26, pad_t + uh - 12,    2, 0xD8C0C8D0u, 0x00000000u, "0");
+        }
     }
 }
 
@@ -230,16 +251,16 @@ static void compute_col_peak_profile(const u8 src[OPD_MAX_ROWS][OPD_MAX_COLS],
 
 static void scope_on_render(PilotPanel *panel, PilotCanvas *c)
 {
-    (void)panel;
     if (!c)
         return;
 
     PilotOpdFrame frame;
-    int mode;
+    int mode, sz;
     char meta[32];
     pthread_mutex_lock(&g_scope_lock);
     frame = g_scope_frame;
     mode  = g_scope_mode;
+    sz    = g_scope_size;
     snprintf(meta, sizeof(meta), "%s", g_scope_meta);
     pthread_mutex_unlock(&g_scope_lock);
 
@@ -250,17 +271,26 @@ static void scope_on_render(PilotPanel *panel, PilotCanvas *c)
         return;
     }
 
+    if (sz < 0) sz = 0;
+    if (sz > 2) sz = 2;
+    int card_w = k_scope_w[sz];
+    int card_h = k_scope_h[sz];
+    int txt_scale = (sz == 0) ? 1 : 2;
+    if (panel)
+        canvas_panel_set_hit_size(panel, card_w, card_h);
+
     int show_ire = (mode != SCOPE_MODE_RGB_CURVE);
-    int pad_l = show_ire ? 44 : 10;
-    int pad_t = 28;
-    int pad_r = 8;
-    int pad_b = show_ire ? 8 : 20;
-    int uw = (int)c->w - pad_l - pad_r;
-    int uh = (int)c->h - pad_t - pad_b;
+    int pad_l = show_ire ? ((txt_scale == 1) ? 24 : 44) : ((txt_scale == 1) ? 6 : 10);
+    int pad_t = (txt_scale == 1) ? 18 : 28;
+    int pad_r = (txt_scale == 1) ? 6 : 8;
+    int pad_b = show_ire ? ((txt_scale == 1) ? 6 : 8) : ((txt_scale == 1) ? 13 : 20);
+    int uw = card_w - pad_l - pad_r;
+    int uh = card_h - pad_t - pad_b;
 
     const char *title = k_mode_titles[mode % SCOPE_MODE_COUNT];
     int v_divs = (mode == SCOPE_MODE_RGB_PARADE) ? 3 : 0;
-    scope_draw_chrome(c, title, meta, pad_l, pad_t, uw, uh, v_divs, show_ire);
+    scope_draw_chrome(c, title, meta, card_w, card_h, txt_scale,
+                      pad_l, pad_t, uw, uh, v_divs, show_ire);
 
     if (!frame.valid) {
         pilot_canvas_end_batch_v1(c);
@@ -349,9 +379,12 @@ static void scope_on_render(PilotPanel *panel, PilotCanvas *c)
         scope_draw_filled_curve(c, hr, 32, maxv, 56, 0x44D82838u, 0x18701018u, 0xFFFF4050u,
                                 pad_l, pad_t, uw, uh);
 
-        pilot_canvas_draw_osd_text_v1(c, pad_l, pad_t + uh + 3, 2, 0xC8B0B8C0u, 0x00000000u, "0");
-        pilot_canvas_draw_osd_text_v1(c, pad_l + uw / 2 - 11, pad_t + uh + 3, 2, 0xC8B0B8C0u, 0x00000000u, "50");
-        pilot_canvas_draw_osd_text_v1(c, pad_l + uw - 34, pad_t + uh + 3, 2, 0xC8B0B8C0u, 0x00000000u, "100");
+        int by = pad_t + uh + ((txt_scale == 1) ? 3 : 3);
+        pilot_canvas_draw_osd_text_v1(c, pad_l, by, txt_scale, 0xC8B0B8C0u, 0x00000000u, "0");
+        pilot_canvas_draw_osd_text_v1(c, pad_l + uw / 2 - (txt_scale == 1 ? 6 : 11),
+                                      by, txt_scale, 0xC8B0B8C0u, 0x00000000u, "50");
+        pilot_canvas_draw_osd_text_v1(c, pad_l + uw - (txt_scale == 1 ? 17 : 34),
+                                      by, txt_scale, 0xC8B0B8C0u, 0x00000000u, "100");
     }
 
     pilot_canvas_end_batch_v1(c);
@@ -408,7 +441,7 @@ static void fc_on_render(PilotPanel *panel, PilotCanvas *c)
     int ow = (int)c->w;
     int oh = (fcols >= 48u) ? 404 : (int)c->h;
 
-    /* Horizontal RLE-merged semi-transparent false-color blocks (X mirrored) */
+    /* Horizontal RLE-merged semi-transparent false-color blocks */
     for (u32 r = 0u; r < frows; ++r) {
         int ry0 = oy + (int)((r * (u32)oh) / frows);
         int ry1 = oy + (int)(((r + 1u) * (u32)oh) / frows);
@@ -417,10 +450,10 @@ static void fc_on_render(PilotPanel *panel, PilotCanvas *c)
 
         u32 col_idx = 0u;
         while (col_idx < fcols) {
-            u32 clr = fc_color_for_y(frame.y[r][fcols - 1u - col_idx], fc_mode);
+            u32 clr = fc_color_for_y(frame.y[r][col_idx], fc_mode);
             u32 run_end = col_idx + 1u;
             while (run_end < fcols &&
-                   fc_color_for_y(frame.y[r][fcols - 1u - run_end], fc_mode) == clr)
+                   fc_color_for_y(frame.y[r][run_end], fc_mode) == clr)
                 ++run_end;
             if (clr != 0u) {
                 int rx0 = ox + (int)((col_idx * (u32)ow) / fcols);
@@ -450,17 +483,25 @@ static void fc_on_render(PilotPanel *panel, PilotCanvas *c)
     pilot_canvas_end_batch_v1(c);
 }
 
-/* --- Declarative Pilot Menu Options --- */
+/* --- Categorized Multi-Level Pilot Menu Options (Sub-Sub-Sub-Menus) --- */
 static void on_scope_mode_opt(PilotUiOption *opt, void *user);
+static void on_scope_size_opt(PilotUiOption *opt, void *user);
 static void on_scope_gamma_opt(PilotUiOption *opt, void *user);
 static void on_scope_wb_opt(PilotUiOption *opt, void *user);
-static void on_scope_fc_opt(PilotUiOption *opt, void *user);
-static void on_scope_disp_opt(PilotUiOption *opt, void *user);
 static void on_scope_lock_opt(PilotUiOption *opt, void *user);
+static void on_scope_fc_opt(PilotUiOption *opt, void *user);
+static void on_scope_focal_mode_opt(PilotUiOption *opt, void *user);
+static void on_scope_focal_lock_opt(PilotUiOption *opt, void *user);
+static void on_scope_status_opt(PilotUiOption *opt, void *user);
+static void on_scope_status_size_opt(PilotUiOption *opt, void *user);
+static void on_scope_status_lock_opt(PilotUiOption *opt, void *user);
+static void on_scope_disp_opt(PilotUiOption *opt, void *user);
 
-static PilotUiOption g_scope_options[] = {
+static const char *const k_onoff_choices[2] = { "关闭", "开启" };
+
+static PilotUiOption g_sub_scope_opts[] = {
     {
-        .label        = "Scope Mode",
+        .label        = "示波器模式",
         .kind         = PILOT_UI_OPT_ENUM,
         .value        = SCOPE_MODE_RGB_WAVE,
         .choices      = k_mode_choices,
@@ -468,15 +509,15 @@ static PilotUiOption g_scope_options[] = {
         .on_change    = on_scope_mode_opt,
     },
     {
-        .label        = "False Color",
+        .label        = "尺寸",
         .kind         = PILOT_UI_OPT_ENUM,
-        .value        = FC_MODE_OFF,
-        .choices      = k_fc_choices,
-        .choice_count = FC_MODE_COUNT,
-        .on_change    = on_scope_fc_opt,
+        .value        = 1,
+        .choices      = k_size_choices,
+        .choice_count = 3,
+        .on_change    = on_scope_size_opt,
     },
     {
-        .label        = "Gamma Curve",
+        .label        = "伽马曲线",
         .kind         = PILOT_UI_OPT_ENUM,
         .value        = SCOPE_GAMMA_REC709,
         .choices      = k_gamma_choices,
@@ -484,7 +525,7 @@ static PilotUiOption g_scope_options[] = {
         .on_change    = on_scope_gamma_opt,
     },
     {
-        .label        = "WB Calib",
+        .label        = "白平衡校准",
         .kind         = PILOT_UI_OPT_ENUM,
         .value        = 1,
         .choices      = k_wb_choices,
@@ -492,20 +533,113 @@ static PilotUiOption g_scope_options[] = {
         .on_change    = on_scope_wb_opt,
     },
     {
-        .label        = "DISP Page",
+        .label        = "锁定位置",
+        .kind         = PILOT_UI_OPT_ENUM,
+        .value        = 0,
+        .choices      = k_lock_choices,
+        .choice_count = 2,
+        .on_change    = on_scope_lock_opt,
+    },
+};
+
+static PilotUiOption g_sub_fc_opts[] = {
+    {
+        .label        = "伪色模式",
+        .kind         = PILOT_UI_OPT_ENUM,
+        .value        = FC_MODE_OFF,
+        .choices      = k_fc_choices,
+        .choice_count = FC_MODE_COUNT,
+        .on_change    = on_scope_fc_opt,
+    },
+};
+
+static PilotUiOption g_sub_focal_opts[] = {
+    {
+        .label        = "显示模式",
+        .kind         = PILOT_UI_OPT_ENUM,
+        .value        = FOCAL_MODE_OFF,
+        .choices      = k_focal_choices,
+        .choice_count = FOCAL_MODE_COUNT,
+        .on_change    = on_scope_focal_mode_opt,
+    },
+    {
+        .label        = "锁定位置",
+        .kind         = PILOT_UI_OPT_ENUM,
+        .value        = 0,
+        .choices      = k_lock_choices,
+        .choice_count = 2,
+        .on_change    = on_scope_focal_lock_opt,
+    },
+};
+
+static PilotUiOption g_sub_status_opts[] = {
+    {
+        .label        = "显示状态条",
+        .kind         = PILOT_UI_OPT_ENUM,
+        .value        = 0,
+        .choices      = k_onoff_choices,
+        .choice_count = 2,
+        .on_change    = on_scope_status_opt,
+    },
+    {
+        .label        = "尺寸",
+        .kind         = PILOT_UI_OPT_ENUM,
+        .value        = 0,
+        .choices      = k_size_choices,
+        .choice_count = 3,
+        .on_change    = on_scope_status_size_opt,
+    },
+    {
+        .label        = "锁定位置",
+        .kind         = PILOT_UI_OPT_ENUM,
+        .value        = 0,
+        .choices      = k_lock_choices,
+        .choice_count = 2,
+        .on_change    = on_scope_status_lock_opt,
+    },
+};
+
+static PilotUiOption g_sub_global_opts[] = {
+    {
+        .label        = "显示方式",
         .kind         = PILOT_UI_OPT_ENUM,
         .value        = 1,
         .choices      = k_disp_choices,
         .choice_count = 2,
         .on_change    = on_scope_disp_opt,
     },
+};
+
+static PilotUiOption g_scope_options[] = {
     {
-        .label        = "Lock Pos",
-        .kind         = PILOT_UI_OPT_ENUM,
-        .value        = 0,
-        .choices      = k_lock_choices,
-        .choice_count = 2,
-        .on_change    = on_scope_lock_opt,
+        .label       = "示波器",
+        .kind        = PILOT_UI_OPT_SUBMENU,
+        .sub_options = g_sub_scope_opts,
+        .sub_count   = sizeof(g_sub_scope_opts) / sizeof(g_sub_scope_opts[0]),
+    },
+    {
+        .label       = "伪色",
+        .kind        = PILOT_UI_OPT_SUBMENU,
+        .sub_options = g_sub_fc_opts,
+        .sub_count   = sizeof(g_sub_fc_opts) / sizeof(g_sub_fc_opts[0]),
+    },
+    {
+        .label       = "焦段条",
+        .kind        = PILOT_UI_OPT_SUBMENU,
+        .sub_options = g_sub_focal_opts,
+        .sub_count   = sizeof(g_sub_focal_opts) / sizeof(g_sub_focal_opts[0]),
+    },
+    {
+        .label       = "状态条",
+        .kind        = PILOT_UI_OPT_SUBMENU,
+        .sub_options = g_sub_status_opts,
+        .sub_count   = sizeof(g_sub_status_opts) / sizeof(g_sub_status_opts[0]),
+    },
+    {
+        .label       = "全局显示",
+        .kind        = PILOT_UI_OPT_SUBMENU,
+        .sub_options = g_sub_global_opts,
+        .sub_count   = sizeof(g_sub_global_opts) / sizeof(g_sub_global_opts[0]),
     },
 };
 
@@ -518,6 +652,21 @@ static void on_scope_mode_opt(PilotUiOption *opt, void *user)
     pthread_mutex_lock(&g_scope_lock);
     g_scope_mode = m;
     scope_rebuild_meta_locked();
+    pthread_mutex_unlock(&g_scope_lock);
+    canvas_config_mark_dirty();
+    if (g_scope_panel)
+        canvas_panel_invalidate(g_scope_panel, 0);
+}
+
+static void on_scope_size_opt(PilotUiOption *opt, void *user)
+{
+    (void)user;
+    if (!opt) return;
+    int sz = opt->value;
+    if (sz < 0) sz = 0;
+    if (sz > 2) sz = 2;
+    pthread_mutex_lock(&g_scope_lock);
+    g_scope_size = sz;
     pthread_mutex_unlock(&g_scope_lock);
     canvas_config_mark_dirty();
     if (g_scope_panel)
@@ -584,9 +733,52 @@ static void on_scope_lock_opt(PilotUiOption *opt, void *user)
     if (!opt) return;
     int lk = opt->value ? 1 : 0;
     pthread_mutex_lock(&g_scope_lock);
-    g_lock_pos = lk;
+    g_scope_locked = lk;
     pthread_mutex_unlock(&g_scope_lock);
-    canvas_set_lock_pos(lk);
+    if (g_scope_panel)
+        canvas_panel_set_locked(g_scope_panel, lk);
+    canvas_config_mark_dirty();
+}
+
+static void on_scope_focal_mode_opt(PilotUiOption *opt, void *user)
+{
+    (void)user;
+    if (!opt) return;
+    int m = opt->value;
+    if (m < 0 || m >= FOCAL_MODE_COUNT) m = FOCAL_MODE_OFF;
+    canvas_focal_widget_set_mode(m, 1);
+    canvas_config_mark_dirty();
+}
+
+static void on_scope_focal_lock_opt(PilotUiOption *opt, void *user)
+{
+    (void)user;
+    if (!opt) return;
+    canvas_focal_widget_set_locked(opt->value ? 1 : 0);
+    canvas_config_mark_dirty();
+}
+
+static void on_scope_status_opt(PilotUiOption *opt, void *user)
+{
+    (void)user;
+    if (!opt) return;
+    canvas_status_widget_set_enabled(opt->value ? 1 : 0, 1);
+    canvas_config_mark_dirty();
+}
+
+static void on_scope_status_size_opt(PilotUiOption *opt, void *user)
+{
+    (void)user;
+    if (!opt) return;
+    canvas_status_widget_set_size(opt->value, 1);
+    canvas_config_mark_dirty();
+}
+
+static void on_scope_status_lock_opt(PilotUiOption *opt, void *user)
+{
+    (void)user;
+    if (!opt) return;
+    canvas_status_widget_set_locked(opt->value ? 1 : 0);
     canvas_config_mark_dirty();
 }
 
@@ -595,7 +787,7 @@ static void scope_on_tap(PilotPanel *panel)
     pthread_mutex_lock(&g_scope_lock);
     /* Tap cycles all 4 visible modes: Parade -> White Wave -> RGB Wave -> RGB Hist */
     g_scope_mode = (g_scope_mode + 1) % 4;
-    g_scope_options[0].value = g_scope_mode;
+    g_sub_scope_opts[0].value = g_scope_mode;
     scope_rebuild_meta_locked();
     int mode = g_scope_mode;
     pthread_mutex_unlock(&g_scope_lock);
@@ -609,36 +801,69 @@ static void scope_on_cfg_load(PilotPanel *panel, const char *key, const char *va
 {
     (void)panel;
     int v = (int)strtol(val, NULL, 10);
-    int apply_always = -1;
-    int apply_lock   = -1;
+    int apply_always      = -1;
+    int apply_scope_lock  = -1;
+    int apply_focal_mode  = -1;
+    int apply_focal_lock  = -1;
+    int apply_status_en   = -1;
+    int apply_status_sz   = -1;
+    int apply_status_lock = -1;
     pthread_mutex_lock(&g_scope_lock);
     if (strcmp(key, "mode") == 0 && v >= 0 && v < SCOPE_MODE_COUNT) {
         g_scope_mode = v;
-        g_scope_options[0].value = v;
+        g_sub_scope_opts[0].value = v;
+    } else if (strcmp(key, "scope_size") == 0 && v >= 0 && v <= 2) {
+        g_scope_size = v;
+        g_sub_scope_opts[1].value = v;
     } else if (strcmp(key, "fc") == 0 && v >= 0 && v < FC_MODE_COUNT) {
         g_fc_mode = v;
-        g_scope_options[1].value = v;
+        g_sub_fc_opts[0].value = v;
+    } else if (strcmp(key, "focal") == 0 && v >= 0 && v < FOCAL_MODE_COUNT) {
+        apply_focal_mode = v;
+        g_sub_focal_opts[0].value = v;
+    } else if (strcmp(key, "focal_lock") == 0) {
+        apply_focal_lock = v ? 1 : 0;
+        g_sub_focal_opts[1].value = apply_focal_lock;
+    } else if (strcmp(key, "status") == 0) {
+        apply_status_en = v ? 1 : 0;
+        g_sub_status_opts[0].value = apply_status_en;
+    } else if (strcmp(key, "status_size") == 0 && v >= 0 && v <= 2) {
+        apply_status_sz = v;
+        g_sub_status_opts[1].value = v;
+    } else if (strcmp(key, "status_lock") == 0) {
+        apply_status_lock = v ? 1 : 0;
+        g_sub_status_opts[2].value = apply_status_lock;
     } else if (strcmp(key, "gamma") == 0 && v >= 0 && v < SCOPE_GAMMA_COUNT) {
         g_scope_gamma = v;
-        g_scope_options[2].value = v;
+        g_sub_scope_opts[2].value = v;
     } else if (strcmp(key, "wb") == 0) {
         g_scope_wb = v ? 1 : 0;
-        g_scope_options[3].value = g_scope_wb;
+        g_sub_scope_opts[3].value = g_scope_wb;
     } else if (strcmp(key, "disp_sep") == 0) {
         g_disp_sep = v ? 1 : 0;
-        g_scope_options[4].value = g_disp_sep;
+        g_sub_global_opts[0].value = g_disp_sep;
         apply_always = !g_disp_sep;
-    } else if (strcmp(key, "lock") == 0) {
-        g_lock_pos = v ? 1 : 0;
-        g_scope_options[5].value = g_lock_pos;
-        apply_lock = g_lock_pos;
+    } else if (strcmp(key, "lock") == 0 || strcmp(key, "scope_lock") == 0) {
+        g_scope_locked = v ? 1 : 0;
+        g_sub_scope_opts[4].value = g_scope_locked;
+        apply_scope_lock = g_scope_locked;
     }
     scope_rebuild_meta_locked();
     pthread_mutex_unlock(&g_scope_lock);
+    if (apply_focal_mode >= 0)
+        canvas_focal_widget_set_mode(apply_focal_mode, 0);
+    if (apply_focal_lock >= 0)
+        canvas_focal_widget_set_locked(apply_focal_lock);
+    if (apply_status_en >= 0)
+        canvas_status_widget_set_enabled(apply_status_en, 0);
+    if (apply_status_sz >= 0)
+        canvas_status_widget_set_size(apply_status_sz, 0);
+    if (apply_status_lock >= 0)
+        canvas_status_widget_set_locked(apply_status_lock);
     if (apply_always >= 0)
         canvas_set_always_on(apply_always);
-    if (apply_lock >= 0)
-        canvas_set_lock_pos(apply_lock);
+    if (apply_scope_lock >= 0 && g_scope_panel)
+        canvas_panel_set_locked(g_scope_panel, apply_scope_lock);
 }
 
 static int scope_on_cfg_save(PilotPanel *panel, char *buf, size_t cap)
@@ -646,14 +871,21 @@ static int scope_on_cfg_save(PilotPanel *panel, char *buf, size_t cap)
     (void)panel;
     pthread_mutex_lock(&g_scope_lock);
     int m  = g_scope_mode;
+    int ssz = g_scope_size;
     int fc = g_fc_mode;
     int g  = g_scope_gamma;
     int w  = g_scope_wb;
     int ds = g_disp_sep;
-    int lk = g_lock_pos;
+    int sl = g_scope_locked;
     pthread_mutex_unlock(&g_scope_lock);
-    return snprintf(buf, cap, "mode=%d\nfc=%d\ngamma=%d\nwb=%d\ndisp_sep=%d\nlock=%d\n",
-                    m, fc, g, w, ds, lk);
+    int fm  = canvas_focal_widget_get_mode();
+    int fl  = canvas_focal_widget_is_locked();
+    int se  = canvas_status_widget_is_enabled();
+    int stz = canvas_status_widget_get_size();
+    int stl = canvas_status_widget_is_locked();
+    return snprintf(buf, cap,
+                    "mode=%d\nscope_size=%d\nfc=%d\nfocal=%d\nfocal_lock=%d\nstatus=%d\nstatus_size=%d\nstatus_lock=%d\ngamma=%d\nwb=%d\ndisp_sep=%d\nscope_lock=%d\n",
+                    m, ssz, fc, fm, fl, se, stz, stl, g, w, ds, sl);
 }
 
 void canvas_scope_widget_init(void)
@@ -692,12 +924,40 @@ void canvas_scope_widget_init(void)
     };
     g_scope_panel = canvas_panel_register(&desc);
     const PilotCanvasStrings *cs = canvas_ui_str();
-    g_scope_options[0].label = cs->opt_scope_mode;
-    g_scope_options[1].label = cs->opt_false_color;
-    g_scope_options[2].label = cs->opt_gamma_curve;
-    g_scope_options[3].label = cs->opt_wb_calib;
-    g_scope_options[4].label = cs->opt_disp_page;
-    g_scope_options[5].label = cs->opt_lock_pos;
+    g_scope_options[0].label = cs->menu_scope;
+    g_scope_options[1].label = cs->menu_fc;
+    g_scope_options[2].label = cs->menu_focal;
+    g_scope_options[3].label = cs->menu_status;
+    g_scope_options[4].label = cs->menu_global;
+
+    g_sub_scope_opts[0].label   = cs->opt_scope_mode;
+    g_sub_scope_opts[0].choices = cs->mode_choices;
+    g_sub_scope_opts[1].label   = cs->opt_size;
+    g_sub_scope_opts[1].choices = cs->size_choices;
+    g_sub_scope_opts[2].label   = cs->opt_gamma;
+    g_sub_scope_opts[3].label   = cs->opt_wb_calib;
+    g_sub_scope_opts[3].choices = cs->wb_choices;
+    g_sub_scope_opts[4].label   = cs->opt_lock_pos;
+    g_sub_scope_opts[4].choices = cs->lock_choices;
+
+    g_sub_fc_opts[0].label   = cs->opt_fc_mode;
+    g_sub_fc_opts[0].choices = cs->fc_choices;
+
+    g_sub_focal_opts[0].label   = cs->opt_focal_mode;
+    g_sub_focal_opts[0].choices = cs->focal_choices;
+    g_sub_focal_opts[1].label   = cs->opt_lock_pos;
+    g_sub_focal_opts[1].choices = cs->lock_choices;
+
+    g_sub_status_opts[0].label   = cs->opt_status_show;
+    g_sub_status_opts[0].choices = cs->onoff_choices;
+    g_sub_status_opts[1].label   = cs->opt_size;
+    g_sub_status_opts[1].choices = cs->size_choices;
+    g_sub_status_opts[2].label   = cs->opt_lock_pos;
+    g_sub_status_opts[2].choices = cs->lock_choices;
+
+    g_sub_global_opts[0].label   = cs->opt_disp_mode;
+    g_sub_global_opts[0].choices = cs->disp_choices;
+
     (void)pilot_ui_register_options(
         "pilot_canvas.so",
         g_scope_options,

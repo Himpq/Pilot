@@ -83,14 +83,22 @@ int canvas_patch_exact_got(uintptr_t got_off, uintptr_t expected_fn_off, void *h
  * invoking GraphicsEngine::drawFramebuffer() from a background thread. */
 void canvas_notify_draw_async(void)
 {
-    union { void *p; void *(*get)(void); } ws_get;
-    union { void *p; void (*fn)(void *); } ws_notify;
-    ws_get.p = dlsym(RTLD_DEFAULT, "_ZN2ux6wgtsys12WidgetSystem15sys_getInstanceEv");
-    ws_notify.p = dlsym(RTLD_DEFAULT, "_ZN2ux6wgtsys12WidgetSystem10notifyDrawEv");
-    if (ws_get.p && ws_notify.p) {
-        void *ws = ws_get.get();
+    static void *(*s_ws_get)(void);
+    static void  (*s_ws_notify)(void *);
+    static int s_resolved;
+    if (!s_resolved) {
+        union { void *p; void *(*get)(void); } u1;
+        union { void *p; void (*fn)(void *); } u2;
+        u1.p = dlsym(RTLD_DEFAULT, "_ZN2ux6wgtsys12WidgetSystem15sys_getInstanceEv");
+        u2.p = dlsym(RTLD_DEFAULT, "_ZN2ux6wgtsys12WidgetSystem10notifyDrawEv");
+        s_ws_get = u1.get;
+        s_ws_notify = u2.fn;
+        s_resolved = 1;
+    }
+    if (s_ws_get && s_ws_notify) {
+        void *ws = s_ws_get();
         if (ws)
-            ws_notify.fn(ws);
+            s_ws_notify(ws);
     }
 }
 
@@ -98,14 +106,22 @@ void canvas_notify_draw_async(void)
 void canvas_notify_draw_sync(void)
 {
     canvas_notify_draw_async();
-    union { void *p; void *(*get)(void); } ge_get;
-    union { void *p; void (*fn)(void *); } ge_draw;
-    ge_get.p = dlsym(RTLD_DEFAULT, "_ZN2ux6gfxeng14GraphicsEngine15sys_getInstanceEv");
-    ge_draw.p = dlsym(RTLD_DEFAULT, "_ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv");
-    if (ge_get.p && ge_draw.p) {
-        void *ge = ge_get.get();
+    static void *(*s_ge_get)(void);
+    static void  (*s_ge_draw)(void *);
+    static int s_resolved;
+    if (!s_resolved) {
+        union { void *p; void *(*get)(void); } u1;
+        union { void *p; void (*fn)(void *); } u2;
+        u1.p = dlsym(RTLD_DEFAULT, "_ZN2ux6gfxeng14GraphicsEngine15sys_getInstanceEv");
+        u2.p = dlsym(RTLD_DEFAULT, "_ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv");
+        s_ge_get = u1.get;
+        s_ge_draw = u2.fn;
+        s_resolved = 1;
+    }
+    if (s_ge_get && s_ge_draw) {
+        void *ge = s_ge_get();
         if (ge)
-            ge_draw.fn(ge);
+            s_ge_draw(ge);
     }
 }
 

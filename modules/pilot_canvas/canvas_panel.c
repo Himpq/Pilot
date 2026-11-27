@@ -27,12 +27,14 @@
 #define CANVAS_MAX_FINGERS           16u
 #define CANVAS_TAP_SLOP              12
 #define CANVAS_CFG_FILENAME          "layout.cfg"
-#define CANVAS_CFG_DEBOUNCE_MS       800u
+#define CANVAS_CFG_DEBOUNCE_MS       250u
 
 struct PilotPanel {
     int used;
     PilotPanelDesc desc;
     int x, y;
+    int locked;
+    volatile int render_dirty;
     PilotCanvas *canvas[PILOT_DISPLAY_COUNT];
     void *widget[PILOT_DISPLAY_COUNT];
 };
@@ -42,8 +44,8 @@ static u32 g_panel_count;
 static pthread_mutex_t g_panel_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static volatile int g_pilot_page[PILOT_DISPLAY_COUNT] = { 0, 0 };
-static volatile int g_lock_pos  = 0;
 static volatile int g_always_on = 0;
+static volatile int g_panel_any_dirty = 0;
 
 static int canvas_read_disp_mode(int is_evf)
 {
@@ -146,9 +148,11 @@ int canvas_pilot_page_visible(void)
     return g_always_on != 0 || g_pilot_page[0] != 0 || g_pilot_page[1] != 0;
 }
 
-void canvas_set_lock_pos(int locked)
+void canvas_panel_set_locked(PilotPanel *panel, int locked)
 {
-    g_lock_pos = locked ? 1 : 0;
+    if (!panel)
+        return;
+    panel->locked = locked ? 1 : 0;
 }
 
 int canvas_panel_any_attached(void)
@@ -209,12 +213,46 @@ static void panel_apply_pos_locked(PilotPanel *p)
     }
 }
 
+void canvas_flush_dirty_panels_ui(void)
+{
+    if (!g_panel_any_dirty)
+        return;
+    g_panel_any_dirty = 0;
+
+    pthread_mutex_lock(&g_panel_lock);
+    for (u32 i = 0; i < g_panel_count; ++i) {
+        PilotPanel *p = &g_panels[i];
+        if (!p->render_dirty || !p->desc.on_render)
+            continue;
+        p->render_dirty = 0;
+        for (u32 d = 0; d < PILOT_DISPLAY_COUNT; ++d) {
+            if (p->canvas[d] && p->widget[d] &&
+                node_attached_to_widget(p->canvas[d]->sprite, p->widget[d])) {
+                p->desc.on_render(p, p->canvas[d]);
+                if (!g_always_on && !g_pilot_page[d] && g_sym.sprite_set_count)
+                    g_sym.sprite_set_count(p->canvas[d]->sprite, 0u);
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_panel_lock);
+}
+
 void canvas_panel_invalidate(PilotPanel *panel, int sync_ui)
 {
     if (!panel || !panel->desc.on_render)
         return;
+    if (!sync_ui) {
+        /* Defer Sprite mutation to Sony's UI/render thread right before
+         * drawFramebuffer() so the GPU never reads a half-written Sprite. */
+        panel->render_dirty = 1;
+        g_panel_any_dirty = 1;
+        canvas_notify_draw_async();
+        return;
+    }
+
     int rendered = 0;
     pthread_mutex_lock(&g_panel_lock);
+    panel->render_dirty = 0;
     for (u32 d = 0; d < PILOT_DISPLAY_COUNT; ++d) {
         if (panel->canvas[d] && panel->widget[d] &&
             node_attached_to_widget(panel->canvas[d]->sprite, panel->widget[d])) {
@@ -225,12 +263,8 @@ void canvas_panel_invalidate(PilotPanel *panel, int sync_ui)
         }
     }
     pthread_mutex_unlock(&g_panel_lock);
-    if (rendered > 0) {
-        if (sync_ui)
-            canvas_notify_draw_sync();
-        else
-            canvas_notify_draw_async();
-    }
+    if (rendered > 0)
+        canvas_notify_draw_sync();
 }
 
 __attribute__((visibility("default")))
@@ -251,6 +285,19 @@ PilotStatus pilot_canvas_get_geometry_v1(int *x, int *y, int *w, int *h)
     return PILOT_STATUS_OK;
 }
 
+void canvas_panel_set_hit_size(PilotPanel *panel, int w, int h)
+{
+    if (!panel || w < 16 || h < 12)
+        return;
+    int old_x = panel->x;
+    int old_y = panel->y;
+    panel->desc.w = w;
+    panel->desc.h = h;
+    clamp_panel_pos(panel, &panel->x, &panel->y);
+    if (panel->x != old_x || panel->y != old_y)
+        panel_apply_pos_locked(panel);
+}
+
 /* ---- persistent layout/state config (layout.cfg) ------------------------ */
 void canvas_config_mark_dirty(void)
 {
@@ -261,12 +308,21 @@ void canvas_config_mark_dirty(void)
     pthread_mutex_unlock(&g_touch_lock);
 }
 
+void canvas_config_mark_dirty_now(void)
+{
+    u64 now = canvas_now_ms();
+    pthread_mutex_lock(&g_touch_lock);
+    g_cfg_dirty = 1;
+    g_cfg_save_after_ms = now;
+    pthread_mutex_unlock(&g_touch_lock);
+}
+
 void canvas_config_load(void)
 {
     if (!g_api || !g_api->file || !g_api->file->read)
         return;
 
-    char buf[512];
+    char buf[1024];
     memset(buf, 0, sizeof(buf));
     PilotStatus rc = g_api->file->read(g_api->file, CANVAS_CFG_FILENAME,
                                        buf, sizeof(buf));
@@ -301,7 +357,6 @@ void canvas_config_load(void)
                     g_panels[i].x = (int)strtol(val, NULL, 10);
                 else
                     g_panels[i].y = (int)strtol(val, NULL, 10);
-                clamp_panel_pos(&g_panels[i], &g_panels[i].x, &g_panels[i].y);
                 break;
             }
             continue;
@@ -315,11 +370,9 @@ void canvas_config_load(void)
                 const char *sub = key + idlen + 1;
                 if (strcmp(sub, "x") == 0) {
                     g_panels[i].x = (int)strtol(val, NULL, 10);
-                    clamp_panel_pos(&g_panels[i], &g_panels[i].x, &g_panels[i].y);
                     handled = 1;
                 } else if (strcmp(sub, "y") == 0) {
                     g_panels[i].y = (int)strtol(val, NULL, 10);
-                    clamp_panel_pos(&g_panels[i], &g_panels[i].x, &g_panels[i].y);
                     handled = 1;
                 } else if (g_panels[i].desc.on_cfg_load) {
                     g_panels[i].desc.on_cfg_load(&g_panels[i], sub, val);
@@ -338,6 +391,10 @@ void canvas_config_load(void)
 
     int any_attached = 0;
     for (u32 i = 0; i < g_panel_count; ++i) {
+        if (g_panels[i].x < 0) g_panels[i].x = 0;
+        if (g_panels[i].x > CANVAS_SCREEN_W - 16) g_panels[i].x = CANVAS_SCREEN_W - 16;
+        if (g_panels[i].y < 0) g_panels[i].y = 0;
+        if (g_panels[i].y > CANVAS_SCREEN_H - 12) g_panels[i].y = CANVAS_SCREEN_H - 12;
         panel_apply_pos_locked(&g_panels[i]);
         for (u32 d = 0; d < PILOT_DISPLAY_COUNT; ++d) {
             if (g_panels[i].canvas[d] && g_panels[i].widget[d] &&
@@ -374,7 +431,7 @@ void canvas_config_flush_if_dirty(void)
     if (!should_save)
         return;
 
-    char buf[512];
+    char buf[1024];
     size_t pos = 0;
     pthread_mutex_lock(&g_panel_lock);
     for (u32 i = 0; i < g_panel_count && pos + 64u < sizeof(buf); ++i) {
@@ -432,8 +489,8 @@ static void pilot_post_mouse_move_hook(void *self, u8 finger, int16_t x,
     if (moved_idx >= 0) {
         int changed = 0;
         pthread_mutex_lock(&g_panel_lock);
-        if (!g_lock_pos && (u32)moved_idx < g_panel_count &&
-            g_panels[moved_idx].desc.draggable) {
+        if ((u32)moved_idx < g_panel_count &&
+            g_panels[moved_idx].desc.draggable && !g_panels[moved_idx].locked) {
             PilotPanel *p = &g_panels[moved_idx];
             clamp_panel_pos(p, &nx, &ny);
             if (nx != p->x || ny != p->y) {
@@ -444,8 +501,10 @@ static void pilot_post_mouse_move_hook(void *self, u8 finger, int16_t x,
             }
         }
         pthread_mutex_unlock(&g_panel_lock);
-        if (changed)
+        if (changed) {
             canvas_notify_draw_sync();
+            canvas_config_mark_dirty();
+        }
     }
 
     if (suppress)
@@ -481,6 +540,8 @@ static void pilot_post_mouse_press_hook(void *self, u8 finger, u8 btn,
                 if (!panel_lcd_is_attached(p))
                     continue;
                 if (!p->desc.draggable && !p->desc.on_tap)
+                    continue;
+                if (p->canvas[0]->rect_count == 0u)
                     continue;
                 if (lx >= p->x && lx < p->x + p->desc.w &&
                     ly >= p->y && ly < p->y + p->desc.h) {
@@ -542,7 +603,7 @@ static void pilot_post_mouse_release_hook(void *self, u8 finger, u8 btn,
                 p->desc.on_tap(p);
             canvas_config_mark_dirty();
         } else {
-            canvas_config_mark_dirty();
+            canvas_config_mark_dirty_now();
             int px = 0, py = 0;
             canvas_panel_get_pos(p, &px, &py);
             mlogf("CANVAS_TOUCH_DROP f=%u id=%s xy=%d,%d",

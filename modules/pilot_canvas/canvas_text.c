@@ -58,6 +58,7 @@ static void pilot_update_frame_hook(void *ws)
 
 static void pilot_draw_fb_hook(void *ge)
 {
+    canvas_flush_dirty_panels_ui();
     canvas_flush_dirty_texts_ui();
     if (g_orig_draw_fb)
         g_orig_draw_fb(ge);
