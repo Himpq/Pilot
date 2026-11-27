@@ -624,16 +624,16 @@ static int read_json_str_field(const char *json, const char *key,
     return 0;
 }
 
-static void read_module_meta_fsys(const char *module_name,
-                                  char *title_out, size_t title_cap,
-                                  char *desc_out, size_t desc_cap)
+static int read_module_meta_fsys(const char *module_name,
+                                 char *title_out, size_t title_cap,
+                                 char *desc_out, size_t desc_cap)
 {
     if (title_out && title_cap)
         title_out[0] = '\0';
     if (desc_out && desc_cap)
         desc_out[0] = '\0';
     if (!module_name)
-        return;
+        return 0;
 
     char base[64];
     snprintf(base, sizeof(base), "%.63s", module_name);
@@ -645,6 +645,17 @@ static void read_module_meta_fsys(const char *module_name,
     if (strncmp(base, "pilot_", 6) == 0)
         snprintf(base_no_pilot, sizeof(base_no_pilot), "%.57s", base + 6);
 
+    const char *lang_code =
+        k_pilot_lang_codes[((size_t)g_menu_lang < (size_t)PILOT_LANG_COUNT)
+                               ? (size_t)g_menu_lang
+                               : 0u];
+    char title_lang_key[24];
+    char desc_lang_key1[24];
+    char desc_lang_key2[24];
+    snprintf(title_lang_key, sizeof(title_lang_key), "title_%s", lang_code);
+    snprintf(desc_lang_key1, sizeof(desc_lang_key1), "description_%s", lang_code);
+    snprintf(desc_lang_key2, sizeof(desc_lang_key2), "desc_%s", lang_code);
+
     const char *names[] = {module_name, base, base_no_pilot};
     char path[192];
     char json[1024];
@@ -655,14 +666,19 @@ static void read_module_meta_fsys(const char *module_name,
                  g_pilot_drive_letter, names[i]);
         if (!read_pilot_file_fsys(path, json, sizeof(json)))
             continue;
-        if (title_out && title_cap > 1)
-            (void)read_json_str_field(json, "title", title_out, title_cap);
+        if (title_out && title_cap > 1) {
+            if (!read_json_str_field(json, title_lang_key, title_out, title_cap))
+                (void)read_json_str_field(json, "title", title_out, title_cap);
+        }
         if (desc_out && desc_cap > 1) {
-            if (!read_json_str_field(json, "description", desc_out, desc_cap))
+            if (!read_json_str_field(json, desc_lang_key1, desc_out, desc_cap) &&
+                !read_json_str_field(json, desc_lang_key2, desc_out, desc_cap) &&
+                !read_json_str_field(json, "description", desc_out, desc_cap))
                 (void)read_json_str_field(json, "desc", desc_out, desc_cap);
         }
-        return;
+        return 1;
     }
+    return 0;
 }
 
 static void load_menu_title_from_config(void)
@@ -865,6 +881,23 @@ static void refresh_all_ui_language(void)
     if (g_pilot_root_page.component_count > 0u)
         g_root_components[0].label = s->version_title;
     for (size_t i = 0; i < g_mod_count && i + 1u < PILOT_LIST_ITEMS_MAX; ++i) {
+        char meta_title[64];
+        char meta_desc[256];
+        if (read_module_meta_fsys(g_mod_names[i],
+                                  meta_title, sizeof(meta_title),
+                                  meta_desc, sizeof(meta_desc))) {
+            if (meta_title[0])
+                snprintf(g_mod_titles[i], sizeof(g_mod_titles[i]), "%s", meta_title);
+            else
+                format_default_module_title(g_mod_names[i],
+                                            g_mod_titles[i],
+                                            sizeof(g_mod_titles[i]));
+            if (meta_desc[0])
+                snprintf(g_mod_desc_bufs[i], sizeof(g_mod_desc_bufs[i]), "%s", meta_desc);
+            else
+                snprintf(g_mod_desc_bufs[i], sizeof(g_mod_desc_bufs[i]),
+                         "%s", s->no_description);
+        }
         refresh_module_ui_strings(i);
         g_root_components[i + 1u].value =
             g_mod_enabled[i] ? s->toggle_on : s->toggle_off;
