@@ -22,6 +22,9 @@ Pilot 是索尼相机的模块化扩展框架，支持运行时访问 AP / CP �
 - **模块加载**：通过 SD 卡清单选择和组合模块，框架负责加载与初始化。
 - **文件与日志**：支持 SD 卡文件读写，以及框架和模块的独立日志。
 
+## Discussion
+Feel free to open an issue to report bugs, suggest new ideas, or even share your success stories!
+
 ## Develop
 
 模块只需实现 `pilot_module_init`，即可通过 `PilotApi` 使用文件、日志、时间和内存等能力。`sdk/pilot_mod_util.h` 提供常用辅助函数；通用工具支持补丁描述、模块构建、部署和日志导出。
