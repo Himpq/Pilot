@@ -6,6 +6,8 @@
     "model": "Sony ILCE-6700",
     "firmware": "2.00",
     "binary_size": 89027992,
+    "binary_sha256": "e65fd595052be5d0e98ce8000dfcb94f90a2f8309de70ef140375052009b0ef3",
+    "patched_binary_sha256": "2523b2ad10c9d17f8064be6735718e98d8278e2c85c0e74e1a5a1c4029fbd857",
     "coordinate_rule": "PT_LOAD[0] has p_offset=0 and p_vaddr=0, so VA equals file offset for the listed code sites."
   },
   "analysis": {
@@ -36,7 +38,7 @@
     "program_header_offset": "0x40",
     "p_filesz_field_offset": "0x60",
     "p_memsz_field_offset": "0x68",
-    "original_size": "0x4489500",
+    "original_size": "0x4488eed",
     "target_size": "0x4489a00",
     "next_load_file_offset": "0x4489aa0",
     "overlap_after_extension": false,
@@ -71,7 +73,8 @@
       "kind": "ELF64 program-header field",
       "file_offset": "0x60",
       "length": 8,
-      "original_bytes": "0095480400000000",
+      "original_bytes": "ed8e480400000000",
+      "original_value": "0x4488eed",
       "target_bytes": "009a480400000000",
       "target_value": "0x4489a00"
     },
@@ -80,7 +83,8 @@
       "kind": "ELF64 program-header field",
       "file_offset": "0x68",
       "length": 8,
-      "original_bytes": "0095480400000000",
+      "original_bytes": "ed8e480400000000",
+      "original_value": "0x4488eed",
       "target_bytes": "009a480400000000",
       "target_value": "0x4489a00"
     }

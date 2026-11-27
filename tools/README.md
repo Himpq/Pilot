@@ -62,9 +62,14 @@ python tools/pilot.py flash install --map F:/PilotLocal/patch.json --writer F:/P
 ```
 
 刷写入口使用现有 `pilot.patch-map.v1`，与通用补丁描述 `pilot.patch.v1` 分开。
-`--map` 必须提供匹配固件的完整描述和产物哈希；公开说明用的 `patch.a6700.json` 不含完整安装产物信息。
+`--map` 必须提供匹配固件的完整描述和产物哈希；公开说明用的 `patch.a6700.json` 不含 `pilot.so` 与刷写器等安装产物信息，但记录目标 `appFw.so` 的原厂与补丁后全文件 SHA-256，供写入前的整包校验。
+预检生成的 `patch.json` 会额外记录本次读取的安装前字节、所选 `pilot.so` 与刷写器的大小和 SHA-256，刷写入口按这些值逐项校验后才允许写入。
 仓库的 `patch/cpload_run.py` 提供 USB transport，依赖安装方式见 `requirements-camera.txt`。帮助、离线校验和 SD 卡操作不加载该依赖。
 真实写入前备份涉及的原文件，设备状态单独写入 `--state-dir/device-state.json`，不改补丁描述。
+每次操作新建一条 `attempt_id` 回执，只保留本次结果，不沿用上一次运行的成功字段。
+
+AP 刷写器 `patch/pilot_ap_flash.c` 的加固行为（先清 `WBI2` 快照头再改 `appFw.so`、两阶段 `fsync` 屏障、`pilot.so` 临时文件 + `renameat` 原子替换）由刷写器自身实现，宿主机侧只按 `A6700PILOTFLASH` 512 字节内的 `key=value` 结果判定，不使用模糊匹配。
+`check` 模式为只读，额外回报 `window_mask`、`usr_statfs_stage`、`usr_magic`、`usr_flags`、`usr_free`、`wbi_status` 与 `wbi_hdr4`，对应 `flash writer-check`。
 
 ## 公开版同步与验证
 
@@ -72,10 +77,13 @@ python tools/pilot.py flash install --map F:/PilotLocal/patch.json --writer F:/P
 python tools/sync_public.py --destination /path/to/public-Pilot --write
 python tools/sync_public.py --destination /path/to/public-Pilot
 python -m unittest discover -s tools/tests -p 'test_*.py'
-python -m unittest discover -s patch/tests -p test_on_camera_offline.py
+python -m unittest discover -s patch/tests -p 'test_*.py'
+bash patch/tests/run_pilot_ap_flash_fault_tests.sh
+bash patch/build_pilot_ap_flash.sh
 cc -std=c11 -O2 -Wall -Wextra -Werror -I patch -I tools/runtime tools/runtime/pilot_patch_runtime.c tools/tests/test_runtime.c -o /tmp/pilot-runtime-test
 /tmp/pilot-runtime-test
 ```
 
 同步仅修改指定的本地公开仓库目录，不执行 Git 提交或推送。
 C SHA-256 测试使用本机 `cc`，Windows 下可在 WSL 运行。
+AP 刷写器故障注入测试同样使用本机 `cc`（自动启用 AddressSanitizer 与 UndefinedBehaviorSanitizer，工具链不支持时降级并提示），通过生成的 `-D` 覆盖把刷写器访问的全部路径重定向到 `mktemp -d` 的临时目录，不触碰 `/usr/lib`、`/dev/nflasha5` 和 `/tmp/jiritsu`。
