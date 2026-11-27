@@ -114,15 +114,22 @@ static inline PilotStatus pilot_ui_clear_text(void)
 typedef enum {
     PILOT_UI_OPT_BOOL = 0,
     PILOT_UI_OPT_ENUM = 1,
-    PILOT_UI_OPT_ACTION = 2
+    PILOT_UI_OPT_ACTION = 2,
+    PILOT_UI_OPT_SUBMENU = 3
 } PilotUiOptionKind;
 
 typedef struct PilotUiOption {
     const char *label;
     PilotUiOptionKind kind;
     int32_t value;
-    const char *const *choices;
-    size_t choice_count;
+    union {
+        const char *const *choices;
+        struct PilotUiOption *sub_options;
+    };
+    union {
+        size_t choice_count;
+        size_t sub_count;
+    };
     const char *action_text;
     void (*on_change)(struct PilotUiOption *opt, void *user);
     void *user;
@@ -214,6 +221,57 @@ static inline PilotStatus pilot_ui_set_rid_override(uint32_t rid,
     if (!resolved.object)
         return PILOT_STATUS_NOT_FOUND;
     return resolved.function(rid, text);
+}
+
+/*
+ * Query the active Menu UI language (0 = English, 1 = Simplified Chinese).
+ * Falls back to 0 (English) when pilot_menu_ui.so is not loaded.
+ */
+#define PILOT_UI_GET_LANG_SYMBOL "pilot_ui_get_language_v1"
+
+enum {
+    PILOT_UI_LANG_EN = 0,
+    PILOT_UI_LANG_ZH = 1
+};
+
+typedef int (*PilotUiGetLangFn)(void);
+
+static inline int pilot_ui_get_language(void)
+{
+    union {
+        void *object;
+        PilotUiGetLangFn function;
+    } resolved;
+    resolved.object = dlsym(RTLD_DEFAULT, PILOT_UI_GET_LANG_SYMBOL);
+    if (!resolved.object)
+        return PILOT_UI_LANG_EN;
+    return resolved.function();
+}
+
+/*
+ * Dynamically set or update a module's detail description text (0x1C3 page).
+ * Pass desc == NULL or "" to clear the runtime override and restore config.json.
+ * Updates immediately if the module's detail page is currently visible.
+ */
+#define PILOT_UI_SET_MOD_DESC_SYMBOL "pilot_ui_set_module_desc_v1"
+
+typedef PilotStatus (*PilotUiSetModDescFn)(const char *module_name,
+                                           const char *desc);
+
+static inline PilotStatus pilot_ui_set_module_desc(const char *module_name,
+                                                   const char *desc)
+{
+    if (!module_name || !module_name[0])
+        return PILOT_STATUS_INVALID_ARGUMENT;
+
+    union {
+        void *object;
+        PilotUiSetModDescFn function;
+    } resolved;
+    resolved.object = dlsym(RTLD_DEFAULT, PILOT_UI_SET_MOD_DESC_SYMBOL);
+    if (!resolved.object)
+        return PILOT_STATUS_NOT_FOUND;
+    return resolved.function(module_name, desc);
 }
 
 #ifdef __cplusplus
