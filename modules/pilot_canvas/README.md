@@ -4,8 +4,9 @@
 
 <table>
   <tr>
-    <td width="50%"><img width="100%" alt="LUMA 波形图" src="assets/waveform_luma.png" /></td>
-    <td width="50%"><img width="100%" alt="RGBW 波形图" src="assets/waveform_rgbw.png" /></td>
+    <td width="33%"><img width="100%" alt="LUMA 波形图" src="assets/waveform_luma.png" /></td>
+    <td width="33%"><img width="100%" alt="RGBW 波形图" src="assets/waveform_rgbw.png" /></td>
+    <td width="33%"><img width="100%" alt="对焦与状态组件" src="assets/focal_widget.png" /></td>
   </tr>
 </table>
 
@@ -29,7 +30,7 @@
 ## 依赖
 
 - [Pilot v0.2.0](https://github.com/Himpq/Pilot/releases/tag/v0.2.0)（A6700）
-- [MenuUI v0.2.0](https://github.com/Himpq/Pilot/releases/tag/menu-ui-v0.2.0)（需排在 `pilot_canvas.so` 之前加载，用于提供 Live View 宿主挂接与 Pilot 菜单设置项）
+- [MenuUI v0.3.0](https://github.com/Himpq/Pilot/releases/tag/menu-ui-v0.3.0)（需排在 `pilot_canvas.so` 之前加载，用于提供 Live View 宿主挂接与 Pilot 菜单设置项）
 
 ## 安装
 

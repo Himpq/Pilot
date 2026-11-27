@@ -2,7 +2,12 @@
 
 在相机“自定义设置”菜单中增加 Pilot 入口，查看 Pilot 版本、模块列表、启用状态与文件路径。
 
-![Pilot 菜单界面](assets/menu-preview.png)
+<table>
+  <tr>
+    <td width="50%"><img width="100%" alt="Pilot 菜单界面（中文）" src="assets/menu-preview.png" /></td>
+    <td width="50%"><img width="100%" alt="Pilot 菜单界面（英文）" src="assets/MenuUI_eng.png" /></td>
+  </tr>
+</table>
 
 ## 安装
 
