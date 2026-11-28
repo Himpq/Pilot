@@ -1,35 +1,37 @@
 # Pilot
 
+English · [中文](README.zh-CN.md)
+
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-AArch64%20%2F%20BIONZ%20XR-blue)](docs/USAGE.md)
 
-Pilot 是索尼相机的模块化扩展框架，支持运行时访问 AP / CP 内存、写入代码区，并从 SD 卡加载功能模块。
+Pilot is a modular extension framework for Sony cameras. It supports runtime access to AP / CP memory, writing to code regions, and loading feature modules from the SD card.
 
 <table>
   <tr>
-    <td width="50%"><img width="100%" alt="Pilot 界面" src="https://github.com/user-attachments/assets/01ff953c-8194-448d-98f2-8f38e3fe164e" /></td>
-    <td width="50%"><img width="100%" alt="De-Squeeze 实时取景" src="modules/desqueeze/assets/desqueeze_view.png" /></td>
+    <td width="50%"><img width="100%" alt="Pilot UI" src="https://github.com/user-attachments/assets/01ff953c-8194-448d-98f2-8f38e3fe164e" /></td>
+    <td width="50%"><img width="100%" alt="De-Squeeze live view" src="modules/desqueeze/assets/desqueeze_view.png" /></td>
   </tr>
   <tr>
-    <td width="50%"><img width="100%" alt="Video Mode 菜单" src="docs/assets/screenshots/videoMode_menu.png" /></td>
-    <td width="50%"><img width="100%" alt="Live View 实时波形图" src="docs/assets/screenshots/canvas_waveform_v2.png" /></td>
+    <td width="50%"><img width="100%" alt="Video Mode menu" src="docs/assets/screenshots/videoMode_menu.png" /></td>
+    <td width="50%"><img width="100%" alt="Live view waveform" src="docs/assets/screenshots/canvas_waveform_v2.png" /></td>
   </tr>
 </table>
 
 ## Features
 
-- **运行时读写**：读取和修改 AP / CP 内存及代码区，CP 写入支持异步操作和 UIPC v4 批量处理。
-- **模块加载**：通过 SD 卡清单选择和组合模块，框架负责加载与初始化。
-- **文件与日志**：支持 SD 卡文件读写，以及框架和模块的独立日志。
+- **Runtime read/write**: read and modify AP / CP memory and code regions; CP writes support async operations and UIPC v4 batching.
+- **Module loading**: select and combine modules through an SD-card manifest; the framework handles loading and initialization.
+- **Files & logging**: SD-card file I/O, plus separate logs for the framework and each module.
 
 ## Discussion
 Feel free to open an issue to report bugs, suggest new ideas, or even share your success stories!
 
 ## Develop
 
-模块只需实现 `pilot_module_init`，即可通过 `PilotApi` 使用文件、日志、时间和内存等能力。`sdk/pilot_mod_util.h` 提供常用辅助函数；通用工具支持补丁描述、模块构建、部署和日志导出。
+A module only needs to implement `pilot_module_init` to use files, logging, time, memory, and other capabilities through `PilotApi`. `sdk/pilot_mod_util.h` provides common helper functions; the general-purpose tooling covers patch descriptions, module builds, deployment, and log export.
 
-- [安装与使用](docs/USAGE.md) · [English](docs/USAGE_EN.md)
-- [模块开发与构建](docs/DEVELOPMENT.md)
-- [通用补丁工具](tools/README.md)
-- [下载模块和框架](https://github.com/Himpq/Pilot/releases)
+- [Installation & usage](docs/USAGE.md)
+- [Module development & builds](docs/DEVELOPMENT.md) (中文)
+- [General patch tools](tools/README.md) (中文)
+- [Download modules & framework](https://github.com/Himpq/Pilot/releases)
