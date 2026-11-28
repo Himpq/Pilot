@@ -98,12 +98,12 @@ On success, **perform a full power-cycle reboot**: power off → remove the batt
 
 > **Warning: CP flashing directly modifies the camera coprocessor firmware `cpapp-b.bin` and carries higher risk than AP patches and SD-card modules.**
 >
-> - **Applicability**: Sony ILCE-6700 firmware 2.00 only. Before flashing, you must run `cp-check` and confirm the output is `CP image: original` with a full `sha256` matching the configuration. If the state is `unknown` or the hash does not match, **do not proceed with flashing**.
+> - **Applicability**: Sony ILCE-6700 firmware 2.00 only. Before the first install, run `cp-check` and confirm `CP state: baseline` and the full SHA-256. Then run `cp-writer-check` in a fresh power cycle and confirm `RESULT=OK`, `cp_magic=0x4d44`, `cp_ro=0`, and `wbi_status=clear`.
 > - **Brick prevention**: Make sure the camera battery is sufficiently charged and the USB connection is stable. During flashing and read-back verification (up to about 2 minutes), **never cut power, unplug the cable, or operate the camera**.
 > - **Backup and recovery**: `cp-install` saves a complete backup of the original `cpapp-b.bin` under `--state-dir` in `cp-backups/`; keep it safe. Removing the SD card does **not** bypass a flashed CP patch — restoring requires `cp-restore` over USB.
 > - **Use only if needed**: Flash only when you need capabilities that depend on the CP code patch, such as UIPC v4 bulk writes. If you only use the basic Pilot features, you can skip this section.
 
-Use the repository's built-in `patch.a6700.json` and `patch/cpdelta.so` (adjust the state directory to your local path):
+Use the bundled `patch.a6700.json` and `patch/pilot_cp_flash.so`. Adjust the state directory to your local path. Run each check in a separate USB service session. A new session may require a power cycle.
 
 ```powershell
 $cpArgs = @(
@@ -115,15 +115,22 @@ $cpArgs = @(
 # 1. Check the current CP image state and SHA-256 first (read-only)
 python tools/pilot.py flash cp-check @cpArgs
 
-# 2. Flash only after confirming the state is original and the hash matches
+# 2. Check the writer, CP filesystem, and WBI2 state in a fresh power cycle
+python tools/pilot.py flash cp-writer-check @cpArgs
+
+# 3. Install in a fresh session after the checks pass
 python tools/pilot.py flash cp-install @cpArgs --yes
 ```
 
-After flashing, a full read-back verification runs and temporary staging files are cleaned up, then fully power-cycle the camera. To uninstall the CP patch and restore the stock `cpapp-b.bin`:
+After `CP install VERIFIED OK`, unplug USB, switch off, remove the battery for at least 10 seconds, and boot without the SD card. Run `cp-check` again and confirm `patched`, mask `0x3`, and the expected full hash. If WBI2 blocks a write, follow the CLI instructions to clear it with the AP tool in a separate session.
+
+Use `cp-restore` to restore stock firmware under normal conditions.
 
 ```powershell
 python tools/pilot.py flash cp-restore @cpArgs --yes
 ```
+
+For `mixed_danger_w0_only` or `corrupt_windows`, keep the camera powered and connected. A write failure in an active service session can trigger automatic stock repair if the image matches stock outside the two windows. If a service session is available, `cp-repair-restore --yes` provides the same guarded restoration explicitly. `unknown` means the tool refuses the write. Retain `cp-device-state.json` and the backup for diagnosis. See the [ILCE-6700 2.00 CP flash record](CP-FLASH-RECORD-A6700-2.00.md) for the device test and its recovery limits.
 
 ## 4. Install Extension Modules
 
