@@ -91,12 +91,12 @@ python tools/pilot.py flash install @pilotArgs --yes
 ## 3. 刷写 CP 固件补丁
 
 > **警告：CP 刷写直接修改相机协处理器固件 `cpapp-b.bin`，风险高于 AP 补丁与 SD 卡模块。**
-> - **适用范围**：仅限 Sony ILCE-6700 固件 2.00。刷写前必须先执行 `cp-check`，确认输出为 `CP image: original` 且完整 `sha256` 与配置一致；若状态为 `unknown` 或哈希不匹配，**切勿继续刷写**。
+> - **适用范围**：仅限 Sony ILCE-6700 固件 2.00。首次安装前执行 `cp-check`，确认 `CP state: baseline` 且全量 SHA-256 与配置一致。重新上电后执行 `cp-writer-check`，确认 `RESULT=OK`、`cp_magic=0x4d44`、`cp_ro=0` 和 `wbi_status=clear`。
 > - **防变砖要求**：确保相机电池电量充足、USB 连接稳固；刷写及回读校验期间（最长约 2 分钟）**严禁断电、拔线或操作相机**。
 > - **备份与恢复**：`cp-install` 会在 `--state-dir` 下的 `cp-backups/` 保存完整的原始 `cpapp-b.bin` 备份，请妥善保留。拔出 SD 卡**不会**绕过已刷入的 CP 补丁，如需还原必须通过 USB 执行 `cp-restore`。
 > - **按需使用**：仅在需要使用 UIPC v4 批量写入等依赖 CP 代码补丁的能力时刷写；仅使用基础 Pilot 功能时可跳过本节。
 
-使用仓库内置的 `patch.a6700.json` 与 `patch/cpdelta.so`（命令中的状态目录可按本机路径调整）：
+使用仓库内置的 `patch.a6700.json` 与 `patch/pilot_cp_flash.so`。将命令中的状态目录改为本机路径。每条检查命令使用独立的 USB 服务会话，必要时重新上电。
 
 ```powershell
 $cpArgs = @(
@@ -108,15 +108,22 @@ $cpArgs = @(
 # 1. 先检查当前 CP 镜像状态与 SHA-256（只读）
 python tools/pilot.py flash cp-check @cpArgs
 
-# 2. 确认状态为 original 且哈希匹配后再刷写
+# 2. 重新上电并检查刷写器、CP 文件系统和 WBI2 状态
+python tools/pilot.py flash cp-writer-check @cpArgs
+
+# 3. 检查通过后，在新的服务会话写入
 python tools/pilot.py flash cp-install @cpArgs --yes
 ```
 
-刷写完成后会执行整包回读校验并清理临时暂存文件，随后完整断电重启相机。如需卸载 CP 补丁并恢复原厂 `cpapp-b.bin`：
+看到 `CP install VERIFIED OK` 后，拔 USB、关机、取出电池至少 10 秒，再无卡开机。重新执行 `cp-check`，确认 `patched`、掩码 `0x3` 和目标全量哈希。若被 WBI2 门禁拒绝，按终端提示在独立的服务会话中用 AP 工具处理。
+
+使用 `cp-restore` 正常恢复原厂固件。
 
 ```powershell
 python tools/pilot.py flash cp-restore @cpArgs --yes
 ```
+
+收到 `mixed_danger_w0_only` 或 `corrupt_windows` 时，保持供电与 USB 连接。写入失败后，若窗口之外的内容与原厂一致，工具可在同一服务会话中尝试自动恢复。有可用服务会话时，也可用 `cp-repair-restore --yes` 显式执行这一受限恢复。`unknown` 状态会拒绝写入。请保留 `cp-device-state.json` 和备份。实机记录及恢复验证范围见 [α6700 2.00 CP 刷写记录](CP-FLASH-RECORD-A6700-2.00.md)。
 
 ## 4. 安装扩展模块
 

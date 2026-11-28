@@ -20,6 +20,8 @@
   "tools/examples/ram.synthetic.json",
   "patch/on_camera.py",
   "patch/on_camera_config.py",
+  "patch/cp_flash.py",
+  "patch/tests/test_cp_flash.py",
   "patch/tests/test_on_camera_offline.py",
   "patch/tests/test_on_camera_hardening.py"
 ]

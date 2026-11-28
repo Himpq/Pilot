@@ -70,10 +70,13 @@ python -m unittest discover -s tools/tests -p 'test_*.py'
 ```sh
 python -m pip install -r requirements-camera.txt
 python tools/pilot.py flash cp-check --map patch.a6700.json
+python tools/pilot.py flash cp-writer-check --map patch.a6700.json
 python tools/pilot.py flash cp-install --map patch.a6700.json --yes
 python tools/pilot.py flash cp-restore --map patch.a6700.json --yes
 ```
 
-写入前会备份 CP 文件，完成后检查完整文件并提示重启。`cp-install` 与 `cp-restore` 会在抽点前门控之后强制校验整份 `cpapp-b.bin` 的全量 SHA-256（仅当严格匹配原厂基线时才允许安装，严格匹配已安装基线时才允许还原）；其他状态会显示为 `unknown` 并拒绝写入。
+加固刷写器先确认 CP 文件系统和 WBI2 状态，安装时先持久化处理函数，再写入口跳转，恢复时顺序反过来。每一阶段都执行 `fsync` 和回读。主机校验完整镜像哈希，写前持久化备份，写后核对完整目标镜像。确认仅补丁窗口异常后，可以尝试在同一服务会话恢复原厂。
+
+在 Linux 或 WSL 下运行 `bash patch/build_pilot_cp_flash.sh` 可重建刷写器。主机端固定校验随仓库提供的刷写器 SHA-256，换工具链构建时需核对生成物并同步更新钉值。测试命令和实机验收记录见 [α6700 2.00 CP 刷写记录](CP-FLASH-RECORD-A6700-2.00.md)。
 
 [返回首页](../README.md)
