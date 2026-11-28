@@ -1253,6 +1253,10 @@ def main() -> int:
     group.add_argument("--cp-check", action="store_true", help="check configured CP patch")
     group.add_argument("--cp-install", action="store_true", help="install configured CP patch")
     group.add_argument("--cp-restore", action="store_true", help="restore configured CP patch")
+    group.add_argument("--cp-writer-check", dest="cp_action", action="store_const", const="writer-check", help="probe CP filesystem and WBI state without flashing")
+    group.add_argument("--cp-repair-restore", dest="cp_action", action="store_const", const="repair-restore", help="restore both CP windows after verifying the rest of the image")
+    group.add_argument("--cp-clean", dest="cp_action", action="store_const", const="clean", help="remove recognized CP staging files")
+    group.add_argument("--cp-clean-foreign", dest="cp_action", action="store_const", const="clean-foreign", help="remove CP staging files including unrecognized files")
     parser.add_argument("--yes", action="store_true", help="required for all write/destructive operations")
     parser.add_argument("--force", action="store_true", help="allow AP install/restore when non-window bytes differ (windows still validated)")
     parser.add_argument("--output-dir", type=Path, help="new directory for --prepare-ap")
@@ -1271,6 +1275,7 @@ def main() -> int:
             args.clean_foreign,
             args.cp_install,
             args.cp_restore,
+            args.cp_action in ("repair-restore", "clean-foreign"),
         )
     )
     if write_op and not args.yes:
@@ -1311,14 +1316,14 @@ def main() -> int:
             )
         return 0
 
-    if args.cp_check or args.cp_install or args.cp_restore:
+    if args.cp_check or args.cp_install or args.cp_restore or args.cp_action:
         import cp_flash
 
         spec = cp_flash.load_config(MAP_PATH)
         cr = load_transport(paths.transport_root)
-        action = "install" if args.cp_install else "restore" if args.cp_restore else "check"
+        action = args.cp_action or ("install" if args.cp_install else "restore" if args.cp_restore else "check")
         with cr.Session(skip_hasp=True) as session:
-            cp_flash.run(session, spec, action, STATE_DIR / "cp-backups")
+            cp_flash.run(session, spec, action, STATE_DIR)
         return 0
 
     patch_map = load_map()
