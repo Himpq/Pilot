@@ -1,0 +1,9 @@
+{
+  "name": "desqueeze",
+  "description": "Hardware VDF anamorphic de-squeeze for live view: 7 squeeze factors x 16:9 / OpenGate, independent LCD / EVF / HDMI switches",
+  "version": "0.1.0",
+  "abi": 2,
+  "devices": ["a6700"],
+  "modules": ["pilot_desqueeze.so"],
+  "requires": ["pilot_menu_ui.so"]
+}

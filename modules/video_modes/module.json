@@ -1,0 +1,9 @@
+{
+  "name": "video_modes",
+  "description": "Unified video mode switcher: Stock / 2K OpenGate / 6K 420 (24-50p) / 1080p (6K oversampled)",
+  "version": "0.1.2",
+  "abi": 2,
+  "devices": ["a6700"],
+  "modules": ["pilot_video_modes.so"],
+  "requires": ["pilot_menu_ui.so"]
+}

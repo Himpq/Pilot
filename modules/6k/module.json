@@ -1,0 +1,9 @@
+{
+  "name": "6k",
+  "description": "Adds 5760x3240 23.976p in-camera recording via the XAVC HS 4K 24p slot",
+  "version": "0.1.0",
+  "abi": 2,
+  "devices": ["a6700"],
+  "modules": ["pilot_6k.so"],
+  "requires": []
+}

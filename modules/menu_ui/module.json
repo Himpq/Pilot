@@ -1,0 +1,9 @@
+{
+  "name": "menu_ui",
+  "description": "Pilot entry in the camera custom-settings menu: framework version, module list, enable state, and file paths",
+  "version": "0.3.0",
+  "abi": 2,
+  "devices": ["a6700"],
+  "modules": ["pilot_menu_ui.so"],
+  "requires": []
+}

@@ -1,0 +1,9 @@
+{
+  "name": "pilot_canvas",
+  "description": "Live view native canvas engine with real-time waveform / scope overlay widgets",
+  "version": "0.2.0",
+  "abi": 2,
+  "devices": ["a6700"],
+  "modules": ["pilot_canvas.so"],
+  "requires": ["pilot_menu_ui.so"]
+}
