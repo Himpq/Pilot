@@ -42,6 +42,16 @@ python tools/pilot.py flash install --map ./ap-plan/patch.json --writer ./ap-pla
 
 上述材料保留在本机，通过命令参数指定。`patch.a6700.json` 描述机型补丁；预检生成的配置记录当前相机、所选 `pilot.so` 和刷写器的校验值。
 
+### Windows USB 驱动：请使用 WinUSB，而非 libusb-win32
+
+Pilot 通过 libusb-1.0 与相机通信，因此 Windows 下相机的 service mode USB 设备（`054c:0336`，刷写时由工具自动切换）必须绑定 **WinUSB** 驱动。
+
+如果之前为其他 A6700 工具（例如 OpenGate RAM patch）安装过 **libusb-win32**，刷写会在开始后立刻失败，报 `USBError: [Errno 32] Pipe error`。解决方法是更换驱动：
+
+1. 先让相机进入 service mode，例如在相机仍以大容量存储模式连接且 libusb-win32 驱动生效时，使用 [Sony-PMCA-RE](https://github.com/ma1co/Sony-PMCA-RE) 的 `serviceshell`。
+2. 打开 [Zadig](https://zadig.akeo.ie/)，在设备列表中选择 service mode 下的相机（`054c:0336`）。
+3. 安装 **WinUSB**（替换 libusb-win32）。
+
 ## 2. 检查与升级常驻框架
 
 相机连接电脑并设置为大容量存储 USB 模式。下面是 Windows PowerShell 示例，将路径替换为自己的本机材料位置：
